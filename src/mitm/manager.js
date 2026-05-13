@@ -435,8 +435,15 @@ async function scheduleMitmRestart(apiKey) {
     mitmRestartCount = 0;
     mitmIsRestarting = false;
   } catch (e) {
-    err(`Restart attempt ${mitmRestartCount}/${MITM_MAX_RESTARTS} failed: ${e.message}`);
     mitmIsRestarting = false;
+    // "Already running" means another code path beat us to startServer — the
+    // desired end-state (server up) is achieved, so treat as success, not failure.
+    if (/already running/i.test(e.message)) {
+      log("🔄 Restart skipped — server already running");
+      mitmRestartCount = 0;
+      return;
+    }
+    err(`Restart attempt ${mitmRestartCount}/${MITM_MAX_RESTARTS} failed: ${e.message}`);
     // Schedule next retry
     scheduleMitmRestart(apiKey);
   }
