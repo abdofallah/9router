@@ -31,8 +31,21 @@ export const MEMORY_CONFIG = {
   proxyDispatchersMaxSize: 20,
 };
 
-// Stream stall timeout: abort if no chunk received within this duration
-export const STREAM_STALL_TIMEOUT_MS = 3 * 60 * 1000;
+// Stream stall timeout: abort if no chunk received within this duration.
+//
+// Default raised from 3min → 30min to handle long Claude generations that
+// buffer tool_call args (openai-to-antigravity holds tool_calls until
+// finish_reason, so a multi-minute write_to_file_ide input_json_delta phase
+// produces zero client-visible bytes). Combined with the ping-forwarding fix
+// in stream.js, healthy long generations no longer trip the timer.
+//
+// Override with env var STREAM_STALL_TIMEOUT_MS (milliseconds).
+// Mirrors Claude Code's CLAUDE_STREAM_IDLE_TIMEOUT_MS knob — see
+// github.com/anthropics/claude-code issue #25979.
+const _envStallMs = typeof process !== "undefined" ? parseInt(process.env?.STREAM_STALL_TIMEOUT_MS, 10) : NaN;
+export const STREAM_STALL_TIMEOUT_MS = Number.isFinite(_envStallMs) && _envStallMs > 0
+  ? _envStallMs
+  : 30 * 60 * 1000;
 
 // Default token limits
 export const DEFAULT_MAX_TOKENS = 64000;

@@ -1,12 +1,28 @@
 // Check if running in Node.js environment (has fs module)
 const isNode = typeof process !== "undefined" && process.versions?.node && typeof window === "undefined";
 
-// Check if logging is enabled via environment variable (default: false)
-const LOGGING_ENABLED = typeof process !== "undefined" && process.env?.ENABLE_REQUEST_LOGS === 'true';
+// Request logging defaults to ENABLED so streaming-stall debugging works out of the box.
+// Opt-out: set ENABLE_REQUEST_LOGS=false in the environment.
+const LOGGING_ENABLED = !(typeof process !== "undefined" && process.env?.ENABLE_REQUEST_LOGS === 'false');
 
 let fs = null;
 let path = null;
+let os = null;
 let LOGS_DIR = null;
+let LOGS_DIR_ANNOUNCED = false;
+
+// Resolve a user-writable logs dir that's findable from any launch cwd:
+//   1. ENABLE_REQUEST_LOGS_DIR — explicit override
+//   2. DATA_DIR/logs — matches the rest of 9router's persistent data (~/.9router/logs)
+//   3. ~/.9router/logs — fallback
+function resolveLogsDir() {
+  const fromEnv = typeof process !== "undefined" ? process.env?.ENABLE_REQUEST_LOGS_DIR : null;
+  if (fromEnv) return fromEnv;
+  const dataDir = typeof process !== "undefined" ? process.env?.DATA_DIR : null;
+  if (dataDir) return path.join(dataDir, "logs");
+  const home = os.homedir();
+  return path.join(home, ".9router", "logs");
+}
 
 // Lazy load Node.js modules (avoid top-level await)
 async function ensureNodeModules() {
@@ -14,7 +30,12 @@ async function ensureNodeModules() {
   try {
     fs = await import("fs");
     path = await import("path");
-    LOGS_DIR = path.join(typeof process !== "undefined" && process.cwd ? process.cwd() : ".", "logs");
+    os = await import("os");
+    LOGS_DIR = resolveLogsDir();
+    if (!LOGS_DIR_ANNOUNCED) {
+      LOGS_DIR_ANNOUNCED = true;
+      console.log(`[LOG] Request logs → ${LOGS_DIR}`);
+    }
   } catch {
     // Running in non-Node environment (Worker, Browser, etc.)
   }
