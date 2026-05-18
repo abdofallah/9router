@@ -2,6 +2,13 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { CLAUDE_SYSTEM_PROMPT } from "../../config/appConstants.js";
 import { adjustMaxTokens } from "../helpers/maxTokensHelper.js";
+import {
+  EFFORT_TO_BUDGET,
+  EffortValidationError,
+  isAdaptiveThinkingModel,
+  parseEffortKeywords,
+  supportsMaxEffort,
+} from "../../utils/claudeEffort.js";
 
 // Empty prefix matches real Claude Code behavior (no tool name prefix).
 // Previously "proxy_" was used but this is a detectable fingerprint difference.
@@ -20,6 +27,41 @@ export function openaiToClaudeRequest(model, body, stream) {
   // Temperature
   if (body.temperature !== undefined) {
     result.temperature = body.temperature;
+  }
+
+  // Effort/thinking pre-resolution: scan user messages for `[effortlevel:X]`
+  // and `[thinkingbudget:N]` keywords, fall back to defaults stamped on the
+  // body (e.g. by the MITM antigravity handler from per-alias config), and
+  // strip the keywords from the messages we forward to the API.
+  const effortDefaults = {
+    effort: body._9rEffortDefault || body.output_config?.effort,
+    budgetTokens: body._9rThinkingBudgetDefault || body.thinking?.budget_tokens,
+  };
+  // Coerce existing reasoning_effort into the default chain so we don't lose
+  // it when keyword scanning runs. The numeric form (budget_tokens) wins over
+  // reasoning_effort for older models — see the thinking emission block below.
+  if (effortDefaults.effort === undefined && body.reasoning_effort) {
+    const re = String(body.reasoning_effort).toLowerCase();
+    if (re === "none") {
+      effortDefaults.effort = undefined; // explicit opt-out
+    } else if (["low", "medium", "high", "max"].includes(re)) {
+      effortDefaults.effort = re;
+    }
+  }
+  const parsed = parseEffortKeywords(body.messages, effortDefaults);
+  if (Array.isArray(body.messages) && parsed.messages !== body.messages) {
+    // Replace messages so downstream block-extraction sees the stripped text.
+    body = { ...body, messages: parsed.messages };
+  }
+  const resolvedEffort = parsed.effort;
+  const resolvedBudgetTokens = parsed.budgetTokens;
+
+  // Reject [effortlevel:max] for models that don't support it (sonnet/haiku).
+  // Surfaced as a stream-side error by the chat handler, not silently clamped.
+  if (resolvedEffort === "max" && !supportsMaxEffort(model)) {
+    throw new EffortValidationError(
+      `[effortlevel:max] is only valid for Opus 4.6+ models (got: ${model}). Use [effortlevel:high] instead.`
+    );
   }
 
   // Messages
@@ -170,32 +212,50 @@ Respond ONLY with the JSON object, no other text.`);
     result.tool_choice = convertOpenAIToolChoice(body.tool_choice);
   }
 
-  // Thinking configuration
+  // Thinking + effort emission — two paths:
+  //
+  //   Modern (opus-4-6, sonnet-4-6+): adaptive thinking + output_config.effort
+  //     thinking: { type: "adaptive" }
+  //     output_config: { effort: "<level>" }    ← only when explicitly set
+  //
+  //   Older (sonnet-4, haiku-4, opus-4, etc.): budget-based thinking, no effort
+  //     thinking: { type: "enabled", budget_tokens: N }
+  //
+  // Precedence inside parseEffortKeywords already resolved the winning effort
+  // and budget. An explicit `body.thinking` object from upstream still wins
+  // over our heuristic — same as before — so callers can force a specific
+  // payload if they know exactly what they want.
+
   if (body.thinking) {
+    // Caller-supplied thinking payload wins — passthrough unchanged.
     result.thinking = {
       type: body.thinking.type || "enabled",
       ...(body.thinking.budget_tokens && { budget_tokens: body.thinking.budget_tokens }),
       ...(body.thinking.max_tokens && { max_tokens: body.thinking.max_tokens })
     };
+  } else if (isAdaptiveThinkingModel(model)) {
+    // Modern model — emit adaptive thinking. budget_tokens is NOT allowed
+    // alongside adaptive; an explicit [thinkingbudget:N] downgrades to enabled.
+    if (resolvedBudgetTokens !== undefined && resolvedBudgetTokens > 0) {
+      result.thinking = { type: "enabled", budget_tokens: resolvedBudgetTokens };
+    } else {
+      result.thinking = { type: "adaptive" };
+    }
+  } else if (resolvedBudgetTokens !== undefined && resolvedBudgetTokens > 0) {
+    // Older model with explicit budget request.
+    result.thinking = { type: "enabled", budget_tokens: resolvedBudgetTokens };
+  } else if (resolvedEffort && resolvedEffort !== "none") {
+    // Older model with only an effort hint — map to a budget so the request
+    // is still meaningful. This preserves legacy reasoning_effort behavior.
+    const budget = EFFORT_TO_BUDGET[resolvedEffort];
+    if (budget) result.thinking = { type: "enabled", budget_tokens: budget };
   }
 
-  // Map OpenAI reasoning_effort → Claude thinking.budget_tokens
-  // When client sends reasoning_effort (OpenAI format) but no explicit thinking block,
-  // translate to Claude's native format.
-  if (body.reasoning_effort && !result.thinking) {
-    const effortToBudget = {
-      none:   0,
-      low:    4096,
-      medium: 8192,
-      high:   16384,
-      xhigh:  32768,
-    };
-    const budget = effortToBudget[body.reasoning_effort.toLowerCase()];
-    if (budget === 0) {
-      // none → no thinking
-    } else if (budget) {
-      result.thinking = { type: "enabled", budget_tokens: budget };
-    }
+  // output_config.effort — only attached when the model actually supports the
+  // effort dimension (adaptive-capable models). For older models we already
+  // expressed the intent via budget_tokens above.
+  if (resolvedEffort && resolvedEffort !== "none" && isAdaptiveThinkingModel(model)) {
+    result.output_config = { ...(result.output_config || {}), effort: resolvedEffort };
   }
 
   // Attach toolNameMap to result for response translation

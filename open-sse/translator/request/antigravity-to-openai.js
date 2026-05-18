@@ -12,6 +12,15 @@ export function antigravityToOpenAIRequest(model, body, stream) {
     stream: stream
   };
 
+  // Per-alias effort/thinking defaults stamped by the MITM antigravity handler.
+  // Propagated verbatim so openai-to-claude can apply keyword-override precedence.
+  if (body._9rEffortDefault !== undefined) {
+    result._9rEffortDefault = body._9rEffortDefault;
+  }
+  if (body._9rThinkingBudgetDefault !== undefined) {
+    result._9rThinkingBudgetDefault = body._9rThinkingBudgetDefault;
+  }
+
   // Generation config
   if (req.generationConfig) {
     const config = req.generationConfig;
@@ -29,8 +38,11 @@ export function antigravityToOpenAIRequest(model, body, stream) {
       result.top_k = config.topK;
     }
 
-    // Thinking config → reasoning_effort
-    if (config.thinkingConfig) {
+    // Antigravity's native thinkingConfig.thinkingBudget — only used as a
+    // last-resort fallback when neither alias defaults nor user keyword apply.
+    // The values Antigravity sends (typically ≤4096) are too low for serious
+    // reasoning, so 9router intentionally overrides them via alias config.
+    if (config.thinkingConfig && result._9rEffortDefault === undefined && result._9rThinkingBudgetDefault === undefined) {
       const budget = config.thinkingConfig.thinkingBudget || 0;
       if (budget > 0) {
         if (budget <= 2048) {
