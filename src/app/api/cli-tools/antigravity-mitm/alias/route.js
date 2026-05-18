@@ -36,10 +36,31 @@ export async function PUT(request) {
       );
     }
 
+    // Mapping values are either:
+    //   - a plain string ("provider/modelId") — legacy form for non-antigravity tools
+    //   - an object { model, effort?, thinkingBudget? } — used for antigravity per-alias config
+    const ALLOWED_EFFORT = new Set(["low", "medium", "high", "max"]);
     const filtered = {};
-    for (const [alias, model] of Object.entries(mappings)) {
-      if (model && model.trim()) {
-        filtered[alias] = model.trim();
+    for (const [alias, value] of Object.entries(mappings)) {
+      if (!value) continue;
+      if (typeof value === "string") {
+        if (value.trim()) filtered[alias] = value.trim();
+        continue;
+      }
+      if (typeof value === "object") {
+        const modelStr = typeof value.model === "string" ? value.model.trim() : "";
+        if (!modelStr) continue;
+        const entry = { model: modelStr };
+        if (value.effort && ALLOWED_EFFORT.has(String(value.effort).toLowerCase())) {
+          entry.effort = String(value.effort).toLowerCase();
+        }
+        const budget = Number(value.thinkingBudget);
+        if (Number.isFinite(budget) && budget > 0 && budget <= 128000) {
+          entry.thinkingBudget = Math.floor(budget);
+        }
+        // Collapse to bare string when no extras are set — keeps the data file
+        // identical to the legacy format and avoids object churn in diffs.
+        filtered[alias] = entry.effort || entry.thinkingBudget ? entry : modelStr;
       }
     }
 

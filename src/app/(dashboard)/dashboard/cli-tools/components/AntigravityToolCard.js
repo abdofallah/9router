@@ -49,6 +49,26 @@ export default function AntigravityToolCard({
     }
   }, [isExpanded]);
 
+  // Mapping value normalization helpers — local state always uses object form
+  // { model, effort, thinkingBudget } for consistency. The API + storage layer
+  // collapses to a plain string when no effort/budget extras are set.
+  const toObjectMapping = (value) => {
+    if (!value) return { model: "", effort: "", thinkingBudget: "" };
+    if (typeof value === "string") return { model: value, effort: "", thinkingBudget: "" };
+    return {
+      model: value.model || "",
+      effort: value.effort || "",
+      thinkingBudget: value.thinkingBudget !== undefined && value.thinkingBudget !== null ? String(value.thinkingBudget) : "",
+    };
+  };
+
+  const updateMappingField = (alias, field, value) => {
+    setModelMappings(prev => ({
+      ...prev,
+      [alias]: { ...toObjectMapping(prev[alias]), [field]: value },
+    }));
+  };
+
   const loadSavedMappings = async () => {
     try {
       const res = await fetch("/api/cli-tools/antigravity-mitm/alias?tool=antigravity");
@@ -57,7 +77,12 @@ export default function AntigravityToolCard({
         const aliases = data.aliases || {};
 
         if (Object.keys(aliases).length > 0) {
-          setModelMappings(aliases);
+          // Normalize incoming legacy strings to object form for uniform editing.
+          const normalized = {};
+          for (const [alias, value] of Object.entries(aliases)) {
+            normalized[alias] = toObjectMapping(value);
+          }
+          setModelMappings(normalized);
         }
       }
     } catch (error) {
@@ -190,18 +215,12 @@ export default function AntigravityToolCard({
 
   const handleModelSelect = (model) => {
     if (currentEditingAlias) {
-      setModelMappings(prev => ({
-        ...prev,
-        [currentEditingAlias]: model.value,
-      }));
+      updateMappingField(currentEditingAlias, "model", model.value);
     }
   };
 
   const handleModelMappingChange = (alias, value) => {
-    setModelMappings(prev => ({
-      ...prev,
-      [alias]: value,
-    }));
+    updateMappingField(alias, "model", value);
   };
 
   const handleSaveMappings = async () => {
@@ -341,37 +360,76 @@ export default function AntigravityToolCard({
                 )}
               </div>
 
-              {tool.defaultModels.map((model) => (
-                <div key={model.alias} className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
-                  <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">{model.name}</span>
-                  <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
-                  <div className="relative w-full min-w-0">
-                    <input
-                      type="text"
-                      value={modelMappings[model.alias] || ""}
-                      onChange={(e) => handleModelMappingChange(model.alias, e.target.value)}
-                      placeholder="provider/model-id"
-                      className="w-full min-w-0 pl-2 pr-7 py-2 bg-surface rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 sm:py-1.5"
-                    />
-                    {modelMappings[model.alias] && (
+              {tool.defaultModels.map((model) => {
+                const mapping = toObjectMapping(modelMappings[model.alias]);
+                const modelStr = mapping.model;
+                return (
+                  <div key={model.alias} className="flex flex-col gap-1.5">
+                    <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
+                      <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm">{model.name}</span>
+                      <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
+                      <div className="relative w-full min-w-0">
+                        <input
+                          type="text"
+                          value={modelStr}
+                          onChange={(e) => handleModelMappingChange(model.alias, e.target.value)}
+                          placeholder="provider/model-id"
+                          className="w-full min-w-0 pl-2 pr-7 py-2 bg-surface rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 sm:py-1.5"
+                        />
+                        {modelStr && (
+                          <button
+                            onClick={() => handleModelMappingChange(model.alias, "")}
+                            className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-text-muted hover:text-red-500 rounded transition-colors"
+                            title="Clear"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">close</span>
+                          </button>
+                        )}
+                      </div>
                       <button
-                        onClick={() => handleModelMappingChange(model.alias, "")}
-                        className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-text-muted hover:text-red-500 rounded transition-colors"
-                        title="Clear"
+                        onClick={() => openModelSelector(model.alias)}
+                        disabled={!hasActiveProviders}
+                        className={`w-full sm:w-auto rounded border px-2 py-2 text-xs transition-colors sm:py-1.5 whitespace-nowrap sm:shrink-0 ${hasActiveProviders ? "bg-surface border-border text-text-main hover:border-primary cursor-pointer" : "opacity-50 cursor-not-allowed border-border"}`}
                       >
-                        <span className="material-symbols-outlined text-[14px]">close</span>
+                        Select
                       </button>
-                    )}
+                    </div>
+                    {/* Per-alias effort + thinking budget defaults. Overridden at chat time by
+                        [effortlevel:X] / [thinkingbudget:N] keywords in any user message. */}
+                    <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2 pl-1">
+                      <span className="hidden sm:block" />
+                      <span className="hidden sm:block" />
+                      <div className="flex items-center gap-2 min-w-0">
+                        <label className="text-[11px] text-text-muted whitespace-nowrap">Effort</label>
+                        <select
+                          value={mapping.effort || ""}
+                          onChange={(e) => updateMappingField(model.alias, "effort", e.target.value)}
+                          className="min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50"
+                        >
+                          <option value="">Auto</option>
+                          <option value="low">Low</option>
+                          <option value="medium">Medium</option>
+                          <option value="high">High</option>
+                          <option value="max">Max (Opus only)</option>
+                        </select>
+                        <label className="text-[11px] text-text-muted whitespace-nowrap ml-2">Budget</label>
+                        <input
+                          type="number"
+                          min="0"
+                          max="128000"
+                          step="1024"
+                          value={mapping.thinkingBudget}
+                          onChange={(e) => updateMappingField(model.alias, "thinkingBudget", e.target.value.replace(/[^\d]/g, ""))}
+                          placeholder="auto"
+                          className="w-24 min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50"
+                          title="Thinking budget in tokens (for older non-adaptive models). Leave empty for adaptive."
+                        />
+                      </div>
+                      <span className="hidden sm:block" />
+                    </div>
                   </div>
-                  <button
-                    onClick={() => openModelSelector(model.alias)}
-                    disabled={!hasActiveProviders}
-                    className={`w-full sm:w-auto rounded border px-2 py-2 text-xs transition-colors sm:py-1.5 whitespace-nowrap sm:shrink-0 ${hasActiveProviders ? "bg-surface border-border text-text-main hover:border-primary cursor-pointer" : "opacity-50 cursor-not-allowed border-border"}`}
-                  >
-                    Select
-                  </button>
-                </div>
-              ))}
+                );
+              })}
 
               <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
                 <Button
