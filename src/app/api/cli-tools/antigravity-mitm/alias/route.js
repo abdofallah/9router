@@ -39,7 +39,7 @@ export async function PUT(request) {
     // Mapping values are either:
     //   - a plain string ("provider/modelId") — legacy form for non-antigravity tools
     //   - an object { model, effort?, thinkingBudget? } — used for antigravity per-alias config
-    const ALLOWED_EFFORT = new Set(["low", "medium", "high", "max"]);
+    const ALLOWED_EFFORT = new Set(["low", "medium", "high", "xhigh", "max"]);
     const filtered = {};
     for (const [alias, value] of Object.entries(mappings)) {
       if (!value) continue;

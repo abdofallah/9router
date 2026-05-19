@@ -406,11 +406,12 @@ export default function AntigravityToolCard({
                           onChange={(e) => updateMappingField(model.alias, "effort", e.target.value)}
                           className="min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50"
                         >
-                          <option value="">Auto</option>
+                          <option value="">Auto (high)</option>
                           <option value="low">Low</option>
                           <option value="medium">Medium</option>
                           <option value="high">High</option>
-                          <option value="max">Max (Opus only)</option>
+                          <option value="xhigh">XHigh (Opus 4.7+)</option>
+                          <option value="max">Max (Opus 4.6+ / Sonnet 4.6+)</option>
                         </select>
                         <label className="text-[11px] text-text-muted whitespace-nowrap ml-2">Budget</label>
                         <input

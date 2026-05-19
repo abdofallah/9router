@@ -8,6 +8,7 @@ import {
   isAdaptiveThinkingModel,
   parseEffortKeywords,
   supportsMaxEffort,
+  supportsXHighEffort,
 } from "../../utils/claudeEffort.js";
 
 // Empty prefix matches real Claude Code behavior (no tool name prefix).
@@ -44,7 +45,7 @@ export function openaiToClaudeRequest(model, body, stream) {
     const re = String(body.reasoning_effort).toLowerCase();
     if (re === "none") {
       effortDefaults.effort = undefined; // explicit opt-out
-    } else if (["low", "medium", "high", "max"].includes(re)) {
+    } else if (["low", "medium", "high", "xhigh", "max"].includes(re)) {
       effortDefaults.effort = re;
     }
   }
@@ -56,11 +57,18 @@ export function openaiToClaudeRequest(model, body, stream) {
   const resolvedEffort = parsed.effort;
   const resolvedBudgetTokens = parsed.budgetTokens;
 
-  // Reject [effortlevel:max] for models that don't support it (sonnet/haiku).
-  // Surfaced as a stream-side error by the chat handler, not silently clamped.
+  // Model-support validation — surfaced as stream-side errors by the chat
+  // handler, not silently clamped. Per the Claude effort spec:
+  //   max   → Opus 4.6+, Sonnet 4.6+, Mythos Preview
+  //   xhigh → Opus 4.7+ exclusively
   if (resolvedEffort === "max" && !supportsMaxEffort(model)) {
     throw new EffortValidationError(
-      `[effortlevel:max] is only valid for Opus 4.6+ models (got: ${model}). Use [effortlevel:high] instead.`
+      `[effortlevel:max] is only valid for Opus 4.6+, Sonnet 4.6+ (got: ${model}). Use [effortlevel:high] instead.`
+    );
+  }
+  if (resolvedEffort === "xhigh" && !supportsXHighEffort(model)) {
+    throw new EffortValidationError(
+      `[effortlevel:xhigh] is only valid for Opus 4.7+ (got: ${model}). Use [effortlevel:max] for Opus 4.6 / Sonnet 4.6, or [effortlevel:high] for older models.`
     );
   }
 
