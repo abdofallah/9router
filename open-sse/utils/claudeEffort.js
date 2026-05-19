@@ -202,6 +202,35 @@ function userTextOf(msg) {
   return "";
 }
 
+// Antigravity wraps every user-typed prompt in <USER_REQUEST>...</USER_REQUEST>
+// and tacks metadata blocks (user_information, # Conversation History,
+// knowledge items) on as separate user messages around it. Past conversation
+// titles embedded in those metadata blocks can contain literal [effortlevel:X]
+// keywords from earlier sessions — picking them up would override the user's
+// real current keyword.
+//
+// When the wrapper is present anywhere in the conversation, narrow keyword
+// detection to ONLY the inside of <USER_REQUEST>...</USER_REQUEST> blocks.
+// Clients that don't use the wrapper (Claude Code, raw OpenAI) keep the
+// legacy "scan everything" behaviour.
+const USER_REQUEST_RE = /<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i;
+
+function hasUserRequestWrapper(messages) {
+  for (const m of messages) {
+    if (!m || m.role !== "user") continue;
+    if (USER_REQUEST_RE.test(userTextOf(m))) return true;
+  }
+  return false;
+}
+
+function detectionTextOf(msg, scopeToWrapper) {
+  const raw = userTextOf(msg);
+  if (!raw) return "";
+  if (!scopeToWrapper) return raw;
+  const match = raw.match(USER_REQUEST_RE);
+  return match ? match[1] : ""; // metadata messages excluded from detection
+}
+
 /**
  * Scan messages newest→oldest for effort/budget keywords and return the
  * latest match. Always strips keywords from EVERY user message (regardless
@@ -226,10 +255,11 @@ export function parseEffortKeywords(messages, defaults = {}) {
   let effort;
   let budgetTokens;
   const fromKeyword = { effort: false, budget: false };
+  const scopeToWrapper = hasUserRequestWrapper(messages);
 
   for (let i = messages.length - 1; i >= 0; i--) {
     if (effort !== undefined && budgetTokens !== undefined) break;
-    const text = userTextOf(messages[i]);
+    const text = detectionTextOf(messages[i], scopeToWrapper);
     if (!text) continue;
     const found = lastKeywordsIn(text);
     if (effort === undefined && found.effort !== undefined) {
