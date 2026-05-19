@@ -162,6 +162,45 @@ describe("claudeEffort util", () => {
       expect(out.messages[0].content).not.toMatch(/effortlevel/);
       expect(out.messages[1].content).not.toMatch(/effortlevel/);
     });
+
+    it("scopes detection to <USER_REQUEST> when present — ignores metadata messages with stray keywords", () => {
+      // Reproduces the user-reported bug: Antigravity injects a "Conversation
+      // History" block AFTER the USER_REQUEST. Past conversation titles in the
+      // history embed `[effortlevel:xhigh]` literally (from earlier test
+      // sessions), and the naive newest→oldest walk would pick xhigh up over
+      // the user's actual current keyword (max), breaking on Opus 4.6.
+      const out = parseEffortKeywords([
+        { role: "user", content: "<user_information>...</user_information>" },
+        { role: "user", content: "<USER_REQUEST>\nSalam [effortlevel:max]\n</USER_REQUEST>" },
+        { role: "user", content: "# Conversation History\n## Conversation X: hey [effortlevel:max]\n## Conversation Y: hey [effortlevel:xhigh]" },
+        { role: "user", content: "Knowledge items: ..." },
+      ]);
+      expect(out.effort).toBe("max");
+      expect(out.fromKeyword.effort).toBe(true);
+      // Keyword still stripped everywhere — history block becomes clean too.
+      expect(out.messages[1].content).not.toMatch(/effortlevel/);
+      expect(out.messages[2].content).not.toMatch(/effortlevel/);
+    });
+
+    it("scoping picks the latest USER_REQUEST across multi-turn conversations", () => {
+      // Two USER_REQUEST turns; the newest one (turn 2) overrides the older.
+      const out = parseEffortKeywords([
+        { role: "user", content: "<USER_REQUEST>turn 1 [effortlevel:low]</USER_REQUEST>" },
+        { role: "assistant", content: "ok" },
+        { role: "user", content: "<USER_REQUEST>turn 2 [effortlevel:high]</USER_REQUEST>" },
+      ]);
+      expect(out.effort).toBe("high");
+    });
+
+    it("legacy behavior preserved when no <USER_REQUEST> wrapper is present anywhere", () => {
+      // Claude Code / raw OpenAI clients don't use the Antigravity wrapper —
+      // they get the original "scan everything" behavior.
+      const out = parseEffortKeywords([
+        { role: "user", content: "first [effortlevel:low]" },
+        { role: "user", content: "second [effortlevel:high]" },
+      ]);
+      expect(out.effort).toBe("high"); // newest wins
+    });
   });
 });
 
