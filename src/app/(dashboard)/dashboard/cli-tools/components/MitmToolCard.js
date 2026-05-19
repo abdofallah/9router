@@ -3,7 +3,18 @@
 import { useState, useEffect, useCallback } from "react";
 import { Card, Button, Badge, Input, ModelSelectModal } from "@/shared/components";
 import { TOOL_HOSTS } from "@/shared/constants/mitmToolHosts";
+import { getEffortCapability } from "open-sse/utils/claudeEffort.js";
 import Image from "next/image";
+
+// Human-readable label for each effort level — shown in the dropdown along with
+// the model-eligibility hint so users know why levels appear/disappear.
+const EFFORT_LABELS = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "XHigh",
+  max: "Max",
+};
 
 /**
  * Per-tool MITM card — shows DNS status + model mappings.
@@ -51,11 +62,12 @@ export default function MitmToolCard({
   const getEffort = (v) => (typeof v === "object" && v !== null ? (v.effort || "") : "");
   const getBudget = (v) => (typeof v === "object" && v !== null && v.thinkingBudget != null ? String(v.thinkingBudget) : "");
 
-  // Effort/budget only make sense for Claude targets. Match the model string
-  // case-insensitively against "claude" so cc/, anthropic/, claude-compat/...
-  // prefixes all resolve correctly. Empty mapping → false (no controls until
-  // a model is picked).
-  const isClaudeTarget = (modelStr) => typeof modelStr === "string" && /claude/i.test(modelStr);
+  // Effort/budget controls are driven by the per-model capability matrix
+  // (see open-sse/utils/claudeEffort.js). Returns:
+  //   { class, supported, effort, levels, adaptive, manualBudget }
+  // — `supported` is true when the model accepts at least one of effort or
+  // manual budget thinking. Non-Claude / unknown targets → all false.
+  const modelCap = (modelStr) => getEffortCapability(modelStr);
 
   const withField = (v, field, newValue) => {
     // For antigravity always work in object form so effort/budget can attach;
@@ -241,6 +253,7 @@ export default function MitmToolCard({
                 {tool.defaultModels.map((model) => {
                   const entry = modelMappings[model.alias];
                   const modelStr = getModelStr(entry);
+                  const cap = isAntigravity ? modelCap(modelStr) : null;
                   return (
                     <div key={model.alias} className="flex flex-col gap-1.5">
                       <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[9rem_auto_1fr_auto] sm:items-center sm:gap-2">
@@ -277,42 +290,55 @@ export default function MitmToolCard({
                           Select
                         </button>
                       </div>
-                      {/* Antigravity-only: per-alias Effort + Thinking Budget defaults.
-                          Only rendered when the alias resolves to a Claude model — Gemini/GPT
-                          targets ignore these fields. Overridden at chat time by
-                          [effortlevel:X] / [thinkingbudget:N] keywords. */}
-                      {isAntigravity && isClaudeTarget(modelStr) && (
+                      {/* Antigravity-only: capability-driven Effort / Budget controls.
+                          - effort dropdown shown only when the model class supports the
+                            effort parameter; the option list is filtered to the model's
+                            allowed levels (e.g. xhigh appears only on Opus 4.7).
+                          - budget input shown only when the model accepts manual thinking
+                            budget — adaptive-only models (Mythos, Opus 4.7) hide it.
+                          - whole sub-row hidden when the model supports neither.
+                          Overridden at chat time by [effortlevel:X] / [thinkingbudget:N]. */}
+                      {isAntigravity && cap?.supported && (
                         <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[9rem_auto_1fr_auto] sm:items-center sm:gap-2">
                           <span className="hidden sm:block" />
                           <span className="hidden sm:block" />
-                          <div className="flex items-center gap-2 min-w-0">
-                            <label className="text-[11px] text-text-muted whitespace-nowrap">Effort</label>
-                            <select
-                              value={getEffort(entry)}
-                              onChange={(e) => handleEffortChange(model.alias, e.target.value)}
-                              disabled={!dnsActive}
-                              className={`min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 ${!dnsActive ? "opacity-50 cursor-not-allowed" : ""}`}
-                            >
-                              <option value="">Auto (high)</option>
-                              <option value="low">Low</option>
-                              <option value="medium">Medium</option>
-                              <option value="high">High</option>
-                              <option value="xhigh">XHigh (Opus 4.7+)</option>
-                              <option value="max">Max (Opus 4.6+ / Sonnet 4.6+)</option>
-                            </select>
-                            <label className="text-[11px] text-text-muted whitespace-nowrap ml-2">Budget</label>
-                            <input
-                              type="number"
-                              min="0"
-                              max="128000"
-                              step="1024"
-                              value={getBudget(entry)}
-                              onChange={(e) => handleBudgetChange(model.alias, e.target.value)}
-                              disabled={!dnsActive}
-                              placeholder="auto"
-                              title="Thinking budget in tokens (for older non-adaptive models). Leave empty for adaptive."
-                              className={`w-24 min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 ${!dnsActive ? "opacity-50 cursor-not-allowed" : ""}`}
-                            />
+                          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                            {cap.effort && (
+                              <>
+                                <label className="text-[11px] text-text-muted whitespace-nowrap">Effort</label>
+                                <select
+                                  value={getEffort(entry)}
+                                  onChange={(e) => handleEffortChange(model.alias, e.target.value)}
+                                  disabled={!dnsActive}
+                                  className={`min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 ${!dnsActive ? "opacity-50 cursor-not-allowed" : ""}`}
+                                  title={`Effort levels available on ${cap.class}: ${cap.levels.join(", ")}`}
+                                >
+                                  <option value="">Auto (high)</option>
+                                  {cap.levels.map((lvl) => (
+                                    <option key={lvl} value={lvl}>{EFFORT_LABELS[lvl] || lvl}</option>
+                                  ))}
+                                </select>
+                              </>
+                            )}
+                            {cap.manualBudget && (
+                              <>
+                                <label className={`text-[11px] text-text-muted whitespace-nowrap ${cap.effort ? "ml-2" : ""}`}>Budget</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="128000"
+                                  step="1024"
+                                  value={getBudget(entry)}
+                                  onChange={(e) => handleBudgetChange(model.alias, e.target.value)}
+                                  disabled={!dnsActive}
+                                  placeholder={cap.adaptive ? "adaptive" : "auto"}
+                                  title={cap.adaptive
+                                    ? "Optional thinking budget (tokens). Leave empty to use adaptive thinking."
+                                    : "Thinking budget in tokens. Leave empty for the model default."}
+                                  className={`w-24 min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 ${!dnsActive ? "opacity-50 cursor-not-allowed" : ""}`}
+                                />
+                              </>
+                            )}
                           </div>
                           <span className="hidden sm:block" />
                         </div>

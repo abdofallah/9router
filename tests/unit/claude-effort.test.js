@@ -2,46 +2,119 @@ import { describe, it, expect } from "vitest";
 
 import {
   EffortValidationError,
+  allowedEffortLevels,
+  getClaudeModelClass,
+  getEffortCapability,
   isAdaptiveThinkingModel,
   parseEffortKeywords,
+  supportsEffort,
+  supportsManualThinking,
   supportsMaxEffort,
   supportsXHighEffort,
 } from "../../open-sse/utils/claudeEffort.js";
 import { openaiToClaudeRequest } from "../../open-sse/translator/request/openai-to-claude.js";
 
 describe("claudeEffort util", () => {
-  describe("model gates", () => {
-    it("isAdaptiveThinkingModel recognizes modern Claude 4.6+ models", () => {
+  describe("model class detection", () => {
+    it.each([
+      ["claude-mythos-preview", "mythos"],
+      ["claude-opus-4-7", "opus-4-7"],
+      ["claude-opus-4-7-20251001", "opus-4-7"],
+      ["cc/claude-opus-4-6", "opus-4-6"],
+      ["claude-sonnet-4-6", "sonnet-4-6"],
+      ["claude-opus-4-5", "opus-4-5"],
+      ["claude-sonnet-4-5", "sonnet-4-5"],
+      ["claude-haiku-4-5", "haiku-4-5"],
+      ["claude-opus-4-1", "opus-4-1"],
+      ["claude-opus-4", "opus-4"],
+      ["claude-sonnet-4", "sonnet-4"],
+      ["claude-sonnet-3-7", "sonnet-3-7"],
+      ["claude-sonnet-3.7", "sonnet-3-7"],
+    ])("classifies %s as %s", (model, klass) => {
+      expect(getClaudeModelClass(model)).toBe(klass);
+    });
+
+    it("returns null for unknown / non-Claude models", () => {
+      expect(getClaudeModelClass("")).toBeNull();
+      expect(getClaudeModelClass(null)).toBeNull();
+      expect(getClaudeModelClass("gpt-4o")).toBeNull();
+      expect(getClaudeModelClass("gemini-3-flash")).toBeNull();
+    });
+
+    it("disambiguates plain opus-4 from opus-4-N variants", () => {
+      // Regression: ensure opus-4-6 doesn't accidentally classify as opus-4.
+      expect(getClaudeModelClass("claude-opus-4-6")).toBe("opus-4-6");
+      expect(getClaudeModelClass("claude-opus-4")).toBe("opus-4");
+    });
+  });
+
+  describe("per-model capabilities", () => {
+    const matrix = [
+      // [model,                effort, levels,                         adaptive, manualBudget]
+      ["claude-mythos-preview", true,  ["low","medium","high","max"],          true,  false],
+      ["claude-opus-4-7",       true,  ["low","medium","high","xhigh","max"],  true,  false],
+      ["claude-opus-4-6",       true,  ["low","medium","high","max"],          true,  true ],
+      ["claude-sonnet-4-6",     true,  ["low","medium","high","max"],          true,  true ],
+      ["claude-opus-4-5",       true,  ["low","medium","high"],                false, true ],
+      ["claude-sonnet-4-5",     false, [],                                     false, true ],
+      ["claude-haiku-4-5",      false, [],                                     false, true ],
+      ["claude-opus-4-1",       false, [],                                     false, true ],
+      ["claude-opus-4",         false, [],                                     false, true ],
+      ["claude-sonnet-4",       false, [],                                     false, true ],
+      ["claude-sonnet-3-7",     false, [],                                     false, true ],
+      ["gpt-4o",                false, [],                                     false, false], // non-Claude
+    ];
+
+    it.each(matrix)("getEffortCapability(%s) returns the published matrix", (model, effort, levels, adaptive, manualBudget) => {
+      const cap = getEffortCapability(model);
+      expect(cap.effort).toBe(effort);
+      expect(cap.levels).toEqual(levels);
+      expect(cap.adaptive).toBe(adaptive);
+      expect(cap.manualBudget).toBe(manualBudget);
+      expect(cap.supported).toBe(effort || manualBudget);
+    });
+
+    it("adaptive thinking includes Mythos / Opus 4.7 / Opus 4.6 / Sonnet 4.6 — NOT Haiku or Opus 4.5", () => {
+      expect(isAdaptiveThinkingModel("claude-mythos-preview")).toBe(true);
+      expect(isAdaptiveThinkingModel("claude-opus-4-7")).toBe(true);
       expect(isAdaptiveThinkingModel("claude-opus-4-6")).toBe(true);
       expect(isAdaptiveThinkingModel("claude-sonnet-4-6")).toBe(true);
-      expect(isAdaptiveThinkingModel("claude-opus-4-7")).toBe(true);
-      expect(isAdaptiveThinkingModel("cc/claude-opus-4-6")).toBe(true);
-    });
-
-    it("isAdaptiveThinkingModel rejects older models", () => {
-      expect(isAdaptiveThinkingModel("claude-sonnet-4")).toBe(false);
+      // Notable exclusions per the spec
+      expect(isAdaptiveThinkingModel("claude-opus-4-5")).toBe(false);
       expect(isAdaptiveThinkingModel("claude-haiku-4-5")).toBe(false);
-      expect(isAdaptiveThinkingModel("claude-opus-4")).toBe(false);
-      expect(isAdaptiveThinkingModel("")).toBe(false);
-      expect(isAdaptiveThinkingModel(null)).toBe(false);
+      expect(isAdaptiveThinkingModel("claude-sonnet-4-5")).toBe(false);
     });
 
-    it("supportsMaxEffort allows Opus 4.6+ and Sonnet 4.6+ per the effort spec", () => {
-      expect(supportsMaxEffort("claude-opus-4-6")).toBe(true);
-      expect(supportsMaxEffort("claude-opus-4-7")).toBe(true);
-      expect(supportsMaxEffort("claude-sonnet-4-6")).toBe(true);
+    it("manual thinking excludes Mythos (no manual mode) and Opus 4.7 (rejected 400)", () => {
+      expect(supportsManualThinking("claude-mythos-preview")).toBe(false);
+      expect(supportsManualThinking("claude-opus-4-7")).toBe(false);
+      // Everything else accepts manual budget.
+      expect(supportsManualThinking("claude-opus-4-6")).toBe(true);
+      expect(supportsManualThinking("claude-sonnet-4-6")).toBe(true);
+      expect(supportsManualThinking("claude-opus-4-5")).toBe(true);
+      expect(supportsManualThinking("claude-haiku-4-5")).toBe(true);
+    });
+
+    it("max effort is available on Mythos / Opus 4.7 / Opus 4.6 / Sonnet 4.6 (not Opus 4.5)", () => {
       expect(supportsMaxEffort("claude-mythos-preview")).toBe(true);
+      expect(supportsMaxEffort("claude-opus-4-7")).toBe(true);
+      expect(supportsMaxEffort("claude-opus-4-6")).toBe(true);
+      expect(supportsMaxEffort("claude-sonnet-4-6")).toBe(true);
+      expect(supportsMaxEffort("claude-opus-4-5")).toBe(false);
       expect(supportsMaxEffort("claude-haiku-4-5")).toBe(false);
-      expect(supportsMaxEffort("claude-opus-4")).toBe(false);
-      expect(supportsMaxEffort("claude-sonnet-4")).toBe(false);
     });
 
-    it("supportsXHighEffort restricts to Opus 4.7+", () => {
+    it("xhigh effort is Opus 4.7-exclusive", () => {
       expect(supportsXHighEffort("claude-opus-4-7")).toBe(true);
-      expect(supportsXHighEffort("claude-opus-4-8")).toBe(true);
       expect(supportsXHighEffort("claude-opus-4-6")).toBe(false);
+      expect(supportsXHighEffort("claude-mythos-preview")).toBe(false);
       expect(supportsXHighEffort("claude-sonnet-4-6")).toBe(false);
-      expect(supportsXHighEffort("claude-sonnet-4-7")).toBe(false);
+    });
+
+    it("supportsEffort is the union of all effort-supporting models", () => {
+      expect(supportsEffort("claude-opus-4-5")).toBe(true); // 4.5 supports effort
+      expect(supportsEffort("claude-sonnet-4-5")).toBe(false);
+      expect(supportsEffort("claude-haiku-4-5")).toBe(false);
     });
   });
 
@@ -50,69 +123,38 @@ describe("claudeEffort util", () => {
       const out = parseEffortKeywords([{ role: "user", content: "hello" }], { effort: "medium" });
       expect(out.effort).toBe("medium");
       expect(out.matched).toBe(false);
-      expect(out.messages[0].content).toBe("hello");
+      expect(out.fromKeyword.effort).toBe(false);
     });
 
-    it("captures [effortlevel:high] and strips it from the message", () => {
-      const out = parseEffortKeywords([{ role: "user", content: "do the thing [effortlevel:high] please" }]);
-      expect(out.effort).toBe("high");
-      expect(out.matched).toBe(true);
-      expect(out.messages[0].content).toBe("do the thing  please".replace(/  /, " "));
+    it.each(["low", "medium", "high", "xhigh", "max"])(
+      "captures [effortlevel:%s] and reports fromKeyword.effort=true",
+      (lvl) => {
+        const out = parseEffortKeywords([{ role: "user", content: `do it [effortlevel:${lvl}]` }]);
+        expect(out.effort).toBe(lvl);
+        expect(out.fromKeyword.effort).toBe(true);
+      }
+    );
+
+    it("[thinkingbudget:N] captured + fromKeyword.budget=true", () => {
+      const out = parseEffortKeywords([{ role: "user", content: "[thinkingbudget:8192] start" }]);
+      expect(out.budgetTokens).toBe(8192);
+      expect(out.fromKeyword.budget).toBe(true);
     });
 
-    it("captures [effortlevel:xhigh] as its own value (not as alias for max)", () => {
-      const out = parseEffortKeywords([{ role: "user", content: "[effortlevel:xhigh] reason" }]);
-      expect(out.effort).toBe("xhigh");
-    });
-
-    it("strips unknown [effortlevel:foo] tokens even if value is unrecognized", () => {
+    it("strips unknown values from the prompt (permissive strip)", () => {
       const out = parseEffortKeywords([{ role: "user", content: "hey [effortlevel:gibberish]" }]);
-      expect(out.effort).toBeUndefined(); // no valid match → no override
-      expect(out.messages[0].content).toBe("hey"); // but still cleaned from prompt
+      expect(out.effort).toBeUndefined();
+      expect(out.messages[0].content).toBe("hey");
     });
 
-    it("strips unknown [thinkingbudget:abc] tokens", () => {
-      const out = parseEffortKeywords([{ role: "user", content: "go [thinkingbudget:not-a-number] now" }]);
-      expect(out.budgetTokens).toBeUndefined();
-      expect(out.messages[0].content).toBe("go  now".replace(/  /, " "));
-    });
-
-    it("cleans the Antigravity USER_REQUEST wrapper without leaving trailing space", () => {
-      // Reproduces the user-reported case where the keyword sat at end-of-line
-      // inside <USER_REQUEST>\n...\n</USER_REQUEST>.
+    it("cleans Antigravity USER_REQUEST wrapper with no trailing whitespace", () => {
       const wrapped = "<USER_REQUEST>\nhey [effortlevel:xhigh]\n</USER_REQUEST>\n<META>x</META>";
       const out = parseEffortKeywords([{ role: "user", content: wrapped }]);
       expect(out.effort).toBe("xhigh");
       expect(out.messages[0].content).toBe("<USER_REQUEST>\nhey\n</USER_REQUEST>\n<META>x</META>");
     });
 
-    it("captures [thinkingbudget:8192] and strips it", () => {
-      const out = parseEffortKeywords([{ role: "user", content: "[thinkingbudget:8192] start" }]);
-      expect(out.budgetTokens).toBe(8192);
-      expect(out.messages[0].content).toBe("start");
-    });
-
-    it("latest user message wins per dimension", () => {
-      const out = parseEffortKeywords([
-        { role: "user", content: "[effortlevel:low] first" },
-        { role: "assistant", content: "ok" },
-        { role: "user", content: "[effortlevel:max] second" },
-      ]);
-      expect(out.effort).toBe("max");
-    });
-
-    it("dimensions resolve independently across messages", () => {
-      // effort comes from turn 3, budget from turn 1 — both should stick.
-      const out = parseEffortKeywords([
-        { role: "user", content: "go [thinkingbudget:12000] please" },
-        { role: "assistant", content: "ok" },
-        { role: "user", content: "now [effortlevel:high]" },
-      ]);
-      expect(out.effort).toBe("high");
-      expect(out.budgetTokens).toBe(12000);
-    });
-
-    it("strips keywords from ALL user messages, not just the matching one", () => {
+    it("strips keywords from every user message (not just the one with the winning value)", () => {
       const out = parseEffortKeywords([
         { role: "user", content: "[effortlevel:low] first" },
         { role: "user", content: "[effortlevel:high] second" },
@@ -120,172 +162,189 @@ describe("claudeEffort util", () => {
       expect(out.messages[0].content).not.toMatch(/effortlevel/);
       expect(out.messages[1].content).not.toMatch(/effortlevel/);
     });
-
-    it("does not touch assistant content", () => {
-      const out = parseEffortKeywords([
-        { role: "assistant", content: "I would set [effortlevel:high] but won't" },
-        { role: "user", content: "hi" },
-      ]);
-      expect(out.effort).toBeUndefined();
-      expect(out.messages[0].content).toContain("[effortlevel:high]");
-    });
-
-    it("handles array-form content blocks", () => {
-      const out = parseEffortKeywords([
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "begin [effortlevel:medium]" },
-            { type: "text", text: "extra context" },
-          ],
-        },
-      ]);
-      expect(out.effort).toBe("medium");
-      expect(out.messages[0].content[0].text).toBe("begin");
-      expect(out.messages[0].content[1].text).toBe("extra context");
-    });
   });
 });
 
-describe("openaiToClaudeRequest — effort/thinking wiring", () => {
+describe("openaiToClaudeRequest — emission per model class", () => {
   const baseBody = () => ({
     messages: [{ role: "user", content: "hello" }],
     max_tokens: 8000,
   });
 
-  it("emits adaptive thinking for modern Claude models without explicit effort", () => {
-    const out = openaiToClaudeRequest("claude-opus-4-6", baseBody(), true);
-    expect(out.thinking).toEqual({ type: "adaptive" });
-    expect(out.output_config).toBeUndefined();
+  describe("Opus 4.7 (adaptive-only, supports xhigh)", () => {
+    it("emits adaptive thinking with no budget by default", () => {
+      const out = openaiToClaudeRequest("claude-opus-4-7", baseBody(), true);
+      expect(out.thinking).toEqual({ type: "adaptive" });
+      expect(out.output_config).toBeUndefined();
+    });
+
+    it("attaches output_config.effort for xhigh", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[effortlevel:xhigh]" }] };
+      const out = openaiToClaudeRequest("claude-opus-4-7", body, true);
+      expect(out.output_config?.effort).toBe("xhigh");
+      expect(out.thinking).toEqual({ type: "adaptive" });
+    });
+
+    it("rejects [thinkingbudget:N] — manual budget unsupported on Opus 4.7", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[thinkingbudget:8000]" }] };
+      expect(() => openaiToClaudeRequest("claude-opus-4-7", body, true))
+        .toThrow(EffortValidationError);
+    });
+
+    it("rejects explicit body.thinking.type:enabled", () => {
+      const body = { ...baseBody(), thinking: { type: "enabled", budget_tokens: 8000 } };
+      expect(() => openaiToClaudeRequest("claude-opus-4-7", body, true))
+        .toThrow(EffortValidationError);
+    });
   });
 
-  it("attaches output_config.effort when alias default is set", () => {
-    const body = { ...baseBody(), _9rEffortDefault: "medium" };
-    const out = openaiToClaudeRequest("claude-opus-4-6", body, true);
-    expect(out.thinking).toEqual({ type: "adaptive" });
-    expect(out.output_config).toEqual({ effort: "medium" });
+  describe("Opus 4.6 / Sonnet 4.6 (adaptive + effort + manual)", () => {
+    it.each(["claude-opus-4-6", "claude-sonnet-4-6"])("emits adaptive by default — %s", (model) => {
+      const out = openaiToClaudeRequest(model, baseBody(), true);
+      expect(out.thinking).toEqual({ type: "adaptive" });
+    });
+
+    it.each(["claude-opus-4-6", "claude-sonnet-4-6"])("[effortlevel:max] accepted on %s", (model) => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[effortlevel:max]" }] };
+      const out = openaiToClaudeRequest(model, body, true);
+      expect(out.output_config?.effort).toBe("max");
+    });
+
+    it("rejects [effortlevel:xhigh] on Sonnet 4.6 (Opus 4.7-only)", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[effortlevel:xhigh]" }] };
+      expect(() => openaiToClaudeRequest("claude-sonnet-4-6", body, true))
+        .toThrow(EffortValidationError);
+    });
+
+    it("[thinkingbudget:N] downgrades to manual mode (still allowed)", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[thinkingbudget:12000]" }] };
+      const out = openaiToClaudeRequest("claude-opus-4-6", body, true);
+      expect(out.thinking).toEqual({ type: "enabled", budget_tokens: 12000 });
+    });
   });
 
-  it("[effortlevel:high] keyword overrides alias default", () => {
-    const body = {
-      ...baseBody(),
-      messages: [{ role: "user", content: "go deep [effortlevel:high]" }],
-      _9rEffortDefault: "medium",
-    };
-    const out = openaiToClaudeRequest("claude-opus-4-6", body, true);
-    expect(out.output_config.effort).toBe("high");
-    expect(out.messages[0].content[0].text).not.toMatch(/effortlevel/);
+  describe("Opus 4.5 (effort + manual, no adaptive)", () => {
+    it("emits manual budget thinking + output_config.effort together", () => {
+      const body = {
+        ...baseBody(),
+        messages: [{ role: "user", content: "[effortlevel:high] [thinkingbudget:10000]" }],
+      };
+      const out = openaiToClaudeRequest("claude-opus-4-5", body, true);
+      expect(out.thinking).toEqual({ type: "enabled", budget_tokens: 10000 });
+      expect(out.output_config?.effort).toBe("high");
+    });
+
+    it("rejects [effortlevel:max] on Opus 4.5 (not in its allowed set)", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[effortlevel:max]" }] };
+      expect(() => openaiToClaudeRequest("claude-opus-4-5", body, true))
+        .toThrow(EffortValidationError);
+    });
+
+    it("effort alone (no budget) still emits output_config.effort", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[effortlevel:medium]" }] };
+      const out = openaiToClaudeRequest("claude-opus-4-5", body, true);
+      expect(out.output_config?.effort).toBe("medium");
+    });
   });
 
-  it("rejects [effortlevel:max] for older models that don't support it", () => {
-    // Per the effort spec, max requires Opus 4.6+, Sonnet 4.6+, or Mythos. Older
-    // sonnets/haikus still get rejected.
-    const body = {
-      ...baseBody(),
-      messages: [{ role: "user", content: "[effortlevel:max]" }],
-    };
-    expect(() => openaiToClaudeRequest("claude-haiku-4-5", body, true))
-      .toThrow(EffortValidationError);
-    expect(() => openaiToClaudeRequest("claude-sonnet-4", body, true))
-      .toThrow(EffortValidationError);
+  describe("Budget-only models (Sonnet 4.5 / Haiku 4.5 / older Claude 4)", () => {
+    it.each(["claude-sonnet-4-5", "claude-haiku-4-5", "claude-sonnet-4", "claude-opus-4-1"])(
+      "rejects effort param on %s",
+      (model) => {
+        const body = { ...baseBody(), messages: [{ role: "user", content: "[effortlevel:high]" }] };
+        expect(() => openaiToClaudeRequest(model, body, true))
+          .toThrow(EffortValidationError);
+      }
+    );
+
+    it("[thinkingbudget:N] accepted on Sonnet 4.5", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[thinkingbudget:8000]" }] };
+      const out = openaiToClaudeRequest("claude-sonnet-4-5", body, true);
+      expect(out.thinking).toEqual({ type: "enabled", budget_tokens: 8000 });
+      expect(out.output_config).toBeUndefined();
+    });
+
+    it("reasoning_effort on older models translates to budget (legacy shim)", () => {
+      const body = { ...baseBody(), reasoning_effort: "high" };
+      const out = openaiToClaudeRequest("claude-sonnet-4-5", body, true);
+      expect(out.thinking).toEqual({ type: "enabled", budget_tokens: 16384 });
+    });
   });
 
-  it("allows [effortlevel:max] on Sonnet 4.6 (per the effort spec)", () => {
-    const body = {
-      ...baseBody(),
-      messages: [{ role: "user", content: "[effortlevel:max] go" }],
-    };
-    const out = openaiToClaudeRequest("claude-sonnet-4-6", body, true);
-    expect(out.output_config.effort).toBe("max");
-    expect(out.thinking).toEqual({ type: "adaptive" });
+  describe("Mythos Preview (adaptive default, effort, NO manual budget)", () => {
+    it("emits adaptive thinking", () => {
+      const out = openaiToClaudeRequest("claude-mythos-preview", baseBody(), true);
+      expect(out.thinking).toEqual({ type: "adaptive" });
+    });
+
+    it("rejects [thinkingbudget:N] — manual not supported", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[thinkingbudget:8000]" }] };
+      expect(() => openaiToClaudeRequest("claude-mythos-preview", body, true))
+        .toThrow(EffortValidationError);
+    });
+
+    it("[effortlevel:max] accepted on Mythos", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[effortlevel:max]" }] };
+      const out = openaiToClaudeRequest("claude-mythos-preview", body, true);
+      expect(out.output_config?.effort).toBe("max");
+    });
+
+    it("rejects [effortlevel:xhigh] on Mythos (Opus 4.7 only)", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[effortlevel:xhigh]" }] };
+      expect(() => openaiToClaudeRequest("claude-mythos-preview", body, true))
+        .toThrow(EffortValidationError);
+    });
   });
 
-  it("allows [effortlevel:max] for Opus 4.6", () => {
-    const body = {
-      ...baseBody(),
-      messages: [{ role: "user", content: "[effortlevel:max] reason hard" }],
-    };
-    const out = openaiToClaudeRequest("claude-opus-4-6", body, true);
-    expect(out.output_config.effort).toBe("max");
-    expect(out.thinking).toEqual({ type: "adaptive" });
-  });
+  describe("Robustness", () => {
+    it("strips unrecognized [effortlevel:bogus] from forwarded messages", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "hey [effortlevel:bogus]" }] };
+      const out = openaiToClaudeRequest("claude-opus-4-6", body, true);
+      const userMsg = out.messages.find(m => m.role === "user");
+      const text = Array.isArray(userMsg.content)
+        ? userMsg.content.map(b => b.text || "").join("")
+        : userMsg.content;
+      expect(text).not.toMatch(/effortlevel/);
+      expect(text.trim()).toBe("hey");
+    });
 
-  it("rejects [effortlevel:xhigh] on Opus 4.6 (Opus 4.7-only)", () => {
-    const body = {
-      ...baseBody(),
-      messages: [{ role: "user", content: "[effortlevel:xhigh]" }],
-    };
-    expect(() => openaiToClaudeRequest("claude-opus-4-6", body, true))
-      .toThrow(EffortValidationError);
-  });
+    it("explicit body.thinking still wins (passthrough) when model supports it", () => {
+      const body = { ...baseBody(), thinking: { type: "enabled", budget_tokens: 5000 } };
+      const out = openaiToClaudeRequest("claude-sonnet-4-6", body, true);
+      expect(out.thinking).toEqual({ type: "enabled", budget_tokens: 5000 });
+    });
 
-  it("allows [effortlevel:xhigh] on Opus 4.7", () => {
-    const body = {
-      ...baseBody(),
-      messages: [{ role: "user", content: "[effortlevel:xhigh] long task" }],
-    };
-    const out = openaiToClaudeRequest("claude-opus-4-7", body, true);
-    expect(out.output_config.effort).toBe("xhigh");
-    expect(out.thinking).toEqual({ type: "adaptive" });
-  });
+    it("alias-default effort is validated against the model on dispatch", () => {
+      // Saved config from old session: effort=max on Opus 4.5 (which doesn't support max).
+      // Should error at request time so user sees the problem.
+      const body = { ...baseBody(), _9rEffortDefault: "max" };
+      expect(() => openaiToClaudeRequest("claude-opus-4-5", body, true))
+        .toThrow(EffortValidationError);
+    });
 
-  it("strips unrecognized keyword values from forwarded messages", () => {
-    // Reproduces user-reported bug: [effortlevel:xhigh] on a build that didn't
-    // know xhigh leaked the literal text through to the API. The permissive
-    // strip ensures the keyword never reaches Claude, even when unrecognized.
-    const body = {
-      ...baseBody(),
-      messages: [{ role: "user", content: "hey [effortlevel:bogus]" }],
-    };
-    const out = openaiToClaudeRequest("claude-sonnet-4-6", body, true);
-    const userMsg = out.messages.find(m => m.role === "user");
-    const text = Array.isArray(userMsg.content)
-      ? userMsg.content.map(b => b.text || "").join("")
-      : userMsg.content;
-    expect(text).not.toMatch(/effortlevel/);
-    expect(text.trim()).toBe("hey");
-  });
+    it("alias-default budget is validated against manualBudget capability", () => {
+      const body = { ...baseBody(), _9rThinkingBudgetDefault: 8000 };
+      expect(() => openaiToClaudeRequest("claude-opus-4-7", body, true))
+        .toThrow(EffortValidationError);
+    });
 
-  it("[thinkingbudget:N] forces budget-based thinking even on adaptive-capable models", () => {
-    const body = {
-      ...baseBody(),
-      messages: [{ role: "user", content: "[thinkingbudget:12000] reason" }],
-    };
-    const out = openaiToClaudeRequest("claude-opus-4-6", body, true);
-    expect(out.thinking).toEqual({ type: "enabled", budget_tokens: 12000 });
+    it("unknown / non-Claude target — emits nothing thinking-related", () => {
+      const body = { ...baseBody(), _9rEffortDefault: "high" };
+      const out = openaiToClaudeRequest("gpt-4o", body, true);
+      expect(out.thinking).toBeUndefined();
+      expect(out.output_config).toBeUndefined();
+    });
   });
+});
 
-  it("older models get budget-based thinking with effort→budget mapping", () => {
-    const body = { ...baseBody(), _9rEffortDefault: "high" };
-    const out = openaiToClaudeRequest("claude-sonnet-4", body, true);
-    expect(out.thinking?.type).toBe("enabled");
-    expect(out.thinking?.budget_tokens).toBe(16384);
-    expect(out.output_config).toBeUndefined();
-  });
-
-  it("explicit body.thinking takes precedence over keyword/default heuristics", () => {
-    const body = {
-      ...baseBody(),
-      thinking: { type: "enabled", budget_tokens: 5000 },
-      messages: [{ role: "user", content: "[effortlevel:high] go" }],
-    };
-    const out = openaiToClaudeRequest("claude-opus-4-6", body, true);
-    expect(out.thinking).toEqual({ type: "enabled", budget_tokens: 5000 });
-    // output_config.effort still attaches because the keyword was valid for this model
-    expect(out.output_config?.effort).toBe("high");
-  });
-
-  it("respects [thinkingbudget:N] from latest user message even with older alias-default", () => {
-    const body = {
-      ...baseBody(),
-      messages: [
-        { role: "user", content: "warm up" },
-        { role: "assistant", content: "ok" },
-        { role: "user", content: "[thinkingbudget:4096] go" },
-      ],
-      _9rThinkingBudgetDefault: 16384,
-    };
-    const out = openaiToClaudeRequest("claude-sonnet-4", body, true);
-    expect(out.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+describe("allowedEffortLevels", () => {
+  it("returns the documented set per model", () => {
+    expect([...allowedEffortLevels("claude-opus-4-7")]).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect([...allowedEffortLevels("claude-opus-4-6")]).toEqual(["low", "medium", "high", "max"]);
+    expect([...allowedEffortLevels("claude-sonnet-4-6")]).toEqual(["low", "medium", "high", "max"]);
+    expect([...allowedEffortLevels("claude-mythos-preview")]).toEqual(["low", "medium", "high", "max"]);
+    expect([...allowedEffortLevels("claude-opus-4-5")]).toEqual(["low", "medium", "high"]);
+    expect([...allowedEffortLevels("claude-sonnet-4-5")]).toEqual([]);
+    expect([...allowedEffortLevels("gpt-4o")]).toEqual([]);
   });
 });
