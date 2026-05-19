@@ -51,6 +51,12 @@ export default function MitmToolCard({
   const getEffort = (v) => (typeof v === "object" && v !== null ? (v.effort || "") : "");
   const getBudget = (v) => (typeof v === "object" && v !== null && v.thinkingBudget != null ? String(v.thinkingBudget) : "");
 
+  // Effort/budget only make sense for Claude targets. Match the model string
+  // case-insensitively against "claude" so cc/, anthropic/, claude-compat/...
+  // prefixes all resolve correctly. Empty mapping → false (no controls until
+  // a model is picked).
+  const isClaudeTarget = (modelStr) => typeof modelStr === "string" && /claude/i.test(modelStr);
+
   const withField = (v, field, newValue) => {
     // For antigravity always work in object form so effort/budget can attach;
     // for other tools, keep as plain string when only the model field is touched.
@@ -272,8 +278,10 @@ export default function MitmToolCard({
                         </button>
                       </div>
                       {/* Antigravity-only: per-alias Effort + Thinking Budget defaults.
-                          Overridden at chat time by [effortlevel:X] / [thinkingbudget:N] keywords. */}
-                      {isAntigravity && (
+                          Only rendered when the alias resolves to a Claude model — Gemini/GPT
+                          targets ignore these fields. Overridden at chat time by
+                          [effortlevel:X] / [thinkingbudget:N] keywords. */}
+                      {isAntigravity && isClaudeTarget(modelStr) && (
                         <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[9rem_auto_1fr_auto] sm:items-center sm:gap-2">
                           <span className="hidden sm:block" />
                           <span className="hidden sm:block" />
