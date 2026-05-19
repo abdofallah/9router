@@ -2,7 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { Card, Button, Badge, Modal, Input, ModelSelectModal } from "@/shared/components";
+import { getEffortCapability } from "open-sse/utils/claudeEffort.js";
 import Image from "next/image";
+
+const EFFORT_LABELS = { low: "Low", medium: "Medium", high: "High", xhigh: "XHigh", max: "Max" };
 
 export default function AntigravityToolCard({
   tool,
@@ -363,6 +366,7 @@ export default function AntigravityToolCard({
               {tool.defaultModels.map((model) => {
                 const mapping = toObjectMapping(modelMappings[model.alias]);
                 const modelStr = mapping.model;
+                const cap = getEffortCapability(modelStr);
                 return (
                   <div key={model.alias} className="flex flex-col gap-1.5">
                     <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2">
@@ -394,40 +398,52 @@ export default function AntigravityToolCard({
                         Select
                       </button>
                     </div>
-                    {/* Per-alias effort + thinking budget defaults. Overridden at chat time by
-                        [effortlevel:X] / [thinkingbudget:N] keywords in any user message. */}
-                    <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2 pl-1">
-                      <span className="hidden sm:block" />
-                      <span className="hidden sm:block" />
-                      <div className="flex items-center gap-2 min-w-0">
-                        <label className="text-[11px] text-text-muted whitespace-nowrap">Effort</label>
-                        <select
-                          value={mapping.effort || ""}
-                          onChange={(e) => updateMappingField(model.alias, "effort", e.target.value)}
-                          className="min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50"
-                        >
-                          <option value="">Auto (high)</option>
-                          <option value="low">Low</option>
-                          <option value="medium">Medium</option>
-                          <option value="high">High</option>
-                          <option value="xhigh">XHigh (Opus 4.7+)</option>
-                          <option value="max">Max (Opus 4.6+ / Sonnet 4.6+)</option>
-                        </select>
-                        <label className="text-[11px] text-text-muted whitespace-nowrap ml-2">Budget</label>
-                        <input
-                          type="number"
-                          min="0"
-                          max="128000"
-                          step="1024"
-                          value={mapping.thinkingBudget}
-                          onChange={(e) => updateMappingField(model.alias, "thinkingBudget", e.target.value.replace(/[^\d]/g, ""))}
-                          placeholder="auto"
-                          className="w-24 min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50"
-                          title="Thinking budget in tokens (for older non-adaptive models). Leave empty for adaptive."
-                        />
+                    {/* Capability-driven per-alias overrides. Effort dropdown shown only
+                        for effort-supporting models; Budget input shown only when manual
+                        thinking is allowed; whole sub-row hidden when neither applies. */}
+                    {cap.supported && (
+                      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr_auto] sm:items-center sm:gap-2 pl-1">
+                        <span className="hidden sm:block" />
+                        <span className="hidden sm:block" />
+                        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                          {cap.effort && (
+                            <>
+                              <label className="text-[11px] text-text-muted whitespace-nowrap">Effort</label>
+                              <select
+                                value={mapping.effort || ""}
+                                onChange={(e) => updateMappingField(model.alias, "effort", e.target.value)}
+                                className="min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                title={`Effort levels available on ${cap.class}: ${cap.levels.join(", ")}`}
+                              >
+                                <option value="">Auto (high)</option>
+                                {cap.levels.map((lvl) => (
+                                  <option key={lvl} value={lvl}>{EFFORT_LABELS[lvl] || lvl}</option>
+                                ))}
+                              </select>
+                            </>
+                          )}
+                          {cap.manualBudget && (
+                            <>
+                              <label className={`text-[11px] text-text-muted whitespace-nowrap ${cap.effort ? "ml-2" : ""}`}>Budget</label>
+                              <input
+                                type="number"
+                                min="0"
+                                max="128000"
+                                step="1024"
+                                value={mapping.thinkingBudget}
+                                onChange={(e) => updateMappingField(model.alias, "thinkingBudget", e.target.value.replace(/[^\d]/g, ""))}
+                                placeholder={cap.adaptive ? "adaptive" : "auto"}
+                                title={cap.adaptive
+                                  ? "Optional thinking budget (tokens). Leave empty to use adaptive thinking."
+                                  : "Thinking budget in tokens. Leave empty for the model default."}
+                                className="w-24 min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50"
+                              />
+                            </>
+                          )}
+                        </div>
+                        <span className="hidden sm:block" />
                       </div>
-                      <span className="hidden sm:block" />
-                    </div>
+                    )}
                   </div>
                 );
               })}

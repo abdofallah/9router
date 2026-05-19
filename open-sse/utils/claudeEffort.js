@@ -1,89 +1,170 @@
-// Claude effort & thinking helpers — mirrors Claude Code v2.1.92 behavior.
+// Claude effort & thinking helpers — strict implementation of the published API.
 //
-// Two independent dimensions:
-//   - effort: 'low' | 'medium' | 'high' | 'max'  → output_config.effort
-//   - thinking: { type: 'adaptive' } (modern models) | { type: 'enabled', budget_tokens } (older)
+// Sources of truth:
+//   - platform.claude.com/docs/en/build-with-claude/effort
+//   - platform.claude.com/docs/en/build-with-claude/adaptive-thinking
+//   - platform.claude.com/docs/en/build-with-claude/extended-thinking
 //
-// Plus a 9router-specific UX shortcut: users can override per-message via
-//   [effortlevel:high]      → bumps output_config.effort
-//   [thinkingbudget:8192]   → forces budget-based thinking with the given tokens
+// The three dimensions, summarised per model class:
+//
+//   class           effort? levels                    adaptive  manualBudget   notes
+//   mythos          yes     low/medium/high/max       yes (def) NO             type:enabled is unsupported
+//   opus-4-7        yes     low/medium/high/xhigh/max yes       NO             type:enabled → 400
+//   opus-4-6        yes     low/medium/high/max       yes       deprecated/ok  manual still works but soft-deprecated
+//   sonnet-4-6      yes     low/medium/high/max       yes       deprecated/ok
+//   opus-4-5        yes     low/medium/high           NO        yes            effort works alongside manual budget
+//   sonnet-4-5      no      —                         no        yes            budget only
+//   haiku-4-5       no      —                         no        yes            budget only
+//   opus-4-1        no      —                         no        yes            budget only
+//   opus-4          no      —                         no        yes            budget only
+//   sonnet-4        no      —                         no        yes            budget only
+//   sonnet-3-7      no      —                         no        yes            budget only
+//   (unknown)       no      —                         no        no             safe default — emit nothing
+//
+// Plus a 9router-specific UX shortcut: users override per-message via
+//   [effortlevel:low|medium|high|xhigh|max]   → output_config.effort
+//   [thinkingbudget:N]                        → thinking: { type: "enabled", budget_tokens: N }
 
-// Per the Claude effort spec (platform.claude.com/docs/en/build-with-claude/effort):
-//   low, medium, high — all effort-supporting models (default: high)
-//   max               — Mythos Preview, Opus 4.7, Opus 4.6, Sonnet 4.6
-//   xhigh             — Opus 4.7 ONLY (extended capability for long-horizon work)
-// `xhigh` is a real distinct level (between high and max in intensity),
-// not an alias for max.
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 
-// Fallback effort→budget mapping for older models that lack output_config.effort
-// support (pre-4.6 Claudes). Modern models go through adaptive thinking +
-// output_config.effort instead, so these numbers are only used as a legacy
-// reasoning_effort shim. xhigh is intentionally omitted — it's Opus 4.7-only
-// and would never reach this branch (the support check rejects it first).
+// Fallback effort→budget mapping. Used as a legacy reasoning_effort shim for
+// older Claude models that accept manual budget thinking but not the effort
+// parameter — so OpenAI-style clients sending reasoning_effort: "high" still
+// produce a sensible request body.
 export const EFFORT_TO_BUDGET = {
   low: 4096,
   medium: 8192,
   high: 16384,
+  xhigh: 24576,
   max: 32768,
 };
 
-// Heuristic: opus-4-6 / sonnet-4-6 and anything newer (claude-4-7+) use adaptive
-// thinking. The match is loose to tolerate vendor prefixes like "cc/" or full
-// IDs like "claude-opus-4-6-20251001".
-export function isAdaptiveThinkingModel(model) {
-  if (!model || typeof model !== "string") return false;
-  const m = model.toLowerCase();
-  // Modern Claude 4.6+ adaptive-capable models
-  return /(?:opus|sonnet|haiku)-4-(?:6|7|8|9)\b/.test(m)
-      || /claude-(?:opus|sonnet|haiku)-4-(?:6|7|8|9)/.test(m);
-}
-
-// `max` effort: Mythos Preview, Opus 4.7, Opus 4.6, Sonnet 4.6. Haiku and older
-// Claudes don't accept it. Per user policy we error rather than silently clamp.
-export function supportsMaxEffort(model) {
-  if (!model || typeof model !== "string") return false;
-  const m = model.toLowerCase();
-  // opus-4-6/4-7/4-8/4-9, sonnet-4-6/4-7+, plus future mythos-* preview lineage.
-  return /opus-4-(?:6|7|8|9)\b/.test(m)
-      || /sonnet-4-(?:6|7|8|9)\b/.test(m)
-      || /mythos/.test(m);
-}
-
-// `xhigh` effort: Opus 4.7 only (and forward — 4.8/4.9 reserved).
-export function supportsXHighEffort(model) {
-  if (!model || typeof model !== "string") return false;
-  return /opus-4-(?:7|8|9)\b/.test(model.toLowerCase());
-}
-
-// Two-tier regexes — strict for capturing valid values, permissive for stripping.
+// ── Model class detection ─────────────────────────────────────────────────
 //
-// The strict regex enforces the canonical level vocabulary (low/medium/high/
-// xhigh/max — per the official Claude effort spec). The permissive strip regex
-// catches ANY `[effortlevel:foo]` or `[thinkingbudget:bar]` token, so typos
-// or unrecognized values are still removed from user prompts rather than
-// being surfaced to the model verbatim.
+// Matches case-insensitive substrings so vendor prefixes (`cc/`, `anthropic/`,
+// `claude-compat/...`) and date suffixes (`-20251001`) all resolve correctly.
+// Order matters — more specific patterns (opus-4-7) must precede less specific
+// ones (opus-4) so 4.7 isn't accidentally classified as plain "opus-4".
+const MODEL_CLASS_PATTERNS = [
+  ["mythos",     /mythos/i],
+  ["opus-4-7",   /opus-4-7/i],
+  ["opus-4-6",   /opus-4-6/i],
+  ["opus-4-5",   /opus-4-5/i],
+  ["opus-4-1",   /opus-4-1/i],
+  ["sonnet-4-6", /sonnet-4-6/i],
+  ["sonnet-4-5", /sonnet-4-5/i],
+  ["haiku-4-5",  /haiku-4-5/i],
+  ["sonnet-3-7", /sonnet-3[.-]7/i],
+  // Plain `opus-4` / `sonnet-4` must come AFTER the dotted variants so
+  // `opus-4-6` doesn't accidentally classify as `opus-4`.
+  ["opus-4",     /opus-4(?!-?\d)/i],
+  ["sonnet-4",   /sonnet-4(?!-?\d)/i],
+];
+
+export function getClaudeModelClass(model) {
+  if (!model || typeof model !== "string") return null;
+  for (const [klass, re] of MODEL_CLASS_PATTERNS) {
+    if (re.test(model)) return klass;
+  }
+  return null;
+}
+
+// ── Capability gates ──────────────────────────────────────────────────────
+
+// Models that accept `output_config.effort`.
+const EFFORT_MODELS = new Set(["mythos", "opus-4-7", "opus-4-6", "sonnet-4-6", "opus-4-5"]);
+
+// Models that accept `thinking: { type: "adaptive" }`.
+const ADAPTIVE_MODELS = new Set(["mythos", "opus-4-7", "opus-4-6", "sonnet-4-6"]);
+
+// Models that accept `thinking: { type: "enabled", budget_tokens: N }`.
+// Excludes Mythos (no manual mode) and Opus 4.7 (manual is rejected with 400).
+const MANUAL_THINKING_MODELS = new Set([
+  "opus-4-6", "sonnet-4-6", "opus-4-5", "sonnet-4-5", "haiku-4-5",
+  "opus-4-1", "opus-4", "sonnet-4", "sonnet-3-7",
+]);
+
+// Effort levels accepted per class. Levels not in the set are rejected.
+const ALLOWED_LEVELS = {
+  "mythos":     new Set(["low", "medium", "high", "max"]),
+  "opus-4-7":   new Set(["low", "medium", "high", "xhigh", "max"]),
+  "opus-4-6":   new Set(["low", "medium", "high", "max"]),
+  "sonnet-4-6": new Set(["low", "medium", "high", "max"]),
+  "opus-4-5":   new Set(["low", "medium", "high"]),
+};
+
+export function supportsEffort(model) {
+  return EFFORT_MODELS.has(getClaudeModelClass(model));
+}
+
+export function isAdaptiveThinkingModel(model) {
+  return ADAPTIVE_MODELS.has(getClaudeModelClass(model));
+}
+
+export function supportsManualThinking(model) {
+  return MANUAL_THINKING_MODELS.has(getClaudeModelClass(model));
+}
+
+export function allowedEffortLevels(model) {
+  return ALLOWED_LEVELS[getClaudeModelClass(model)] || new Set();
+}
+
+export function supportsMaxEffort(model) {
+  return allowedEffortLevels(model).has("max");
+}
+
+export function supportsXHighEffort(model) {
+  return allowedEffortLevels(model).has("xhigh");
+}
+
+// Composite capability summary — what the dashboard renders against.
+//
+// Shape: {
+//   class: string|null,        // detected model class id, or null if non-Claude/unknown
+//   supported: boolean,        // any Claude support at all (effort OR manualBudget)
+//   effort: boolean,           // show Effort dropdown?
+//   levels: string[],          // ordered list of effort options to show
+//   adaptive: boolean,         // model uses adaptive thinking by default
+//   manualBudget: boolean,     // show Budget input?
+// }
+export function getEffortCapability(model) {
+  const klass = getClaudeModelClass(model);
+  const effort = EFFORT_MODELS.has(klass);
+  const adaptive = ADAPTIVE_MODELS.has(klass);
+  const manualBudget = MANUAL_THINKING_MODELS.has(klass);
+  const levels = ALLOWED_LEVELS[klass] ? EFFORT_LEVELS.filter(l => ALLOWED_LEVELS[klass].has(l)) : [];
+  return {
+    class: klass,
+    supported: effort || manualBudget,
+    effort,
+    levels,
+    adaptive,
+    manualBudget,
+  };
+}
+
+// ── Keyword parsing ───────────────────────────────────────────────────────
+//
+// Two-tier regexes — strict for capturing valid values, permissive for
+// stripping. The permissive strip removes ANY `[effortlevel:X]` /
+// `[thinkingbudget:N]` token regardless of validity so typos never leak into
+// the prompt forwarded to Claude.
 const EFFORT_RE        = /\[effortlevel:(low|medium|high|xhigh|max)\]/gi;
 const BUDGET_RE        = /\[thinkingbudget:(\d{2,7})\]/gi;
 const EFFORT_STRIP_RE  = /\[effortlevel:[^\]\n]*\]/gi;
 const BUDGET_STRIP_RE  = /\[thinkingbudget:[^\]\n]*\]/gi;
 
-// Strip all keyword occurrences from a string. Also collapses the surrounding
-// whitespace so we don't leave "Hello   world" if the keyword was sandwiched.
-// Uses the permissive strip regexes so unrecognized values are also removed.
 function stripKeywords(text) {
   if (!text) return text;
   return text
     .replace(EFFORT_STRIP_RE, "")
     .replace(BUDGET_STRIP_RE, "")
     .replace(/[ \t]{2,}/g, " ")
-    .replace(/[ \t]+\n/g, "\n")     // drop trailing-of-line whitespace
+    .replace(/[ \t]+\n/g, "\n")
     .replace(/\n[ \t]+\n/g, "\n\n")
     .trim();
 }
 
-// Find the LAST effort + budget keyword in a single text chunk.
-// Returns { effort?, budgetTokens? } — undefined when the keyword wasn't present.
 function lastKeywordsIn(text) {
   if (!text || typeof text !== "string") return {};
   let effort;
@@ -98,9 +179,6 @@ function lastKeywordsIn(text) {
   return { effort, budgetTokens };
 }
 
-// Walk a single user message's content (string or array of blocks) and apply
-// stripKeywords to every text piece. Returns the cleaned content in the same
-// shape as the input.
 function cleanUserContent(content) {
   if (typeof content === "string") return stripKeywords(content);
   if (!Array.isArray(content)) return content;
@@ -112,9 +190,6 @@ function cleanUserContent(content) {
   });
 }
 
-// Extract the text portion of a message for keyword scanning. We only scan
-// user-role messages — assistant text is the model's own output and would
-// never legitimately carry a `[effortlevel:…]` instruction from the user.
 function userTextOf(msg) {
   if (!msg || msg.role !== "user") return "";
   if (typeof msg.content === "string") return msg.content;
@@ -129,26 +204,29 @@ function userTextOf(msg) {
 
 /**
  * Scan messages newest→oldest for effort/budget keywords and return the
- * latest match. Always strips keywords from EVERY user message regardless of
- * which one provided the winning value (so the API never sees the literal
- * `[effortlevel:…]` markers).
+ * latest match. Always strips keywords from EVERY user message (regardless
+ * of which one provided the winning value) AND regardless of value validity
+ * (the permissive strip removes typos too).
  *
- * @param {Array} messages - OpenAI-format messages array
+ * @param {Array} messages - OpenAI-format messages
  * @param {object} [defaults] - { effort?, budgetTokens? } fallback if no keyword found
- * @returns {{ effort?: string, budgetTokens?: number, messages: Array, matched: boolean }}
+ * @returns {{ effort?, budgetTokens?, messages, matched, fromKeyword: {effort,budget} }}
  */
 export function parseEffortKeywords(messages, defaults = {}) {
   if (!Array.isArray(messages) || messages.length === 0) {
-    return { ...defaults, messages: messages || [], matched: false };
+    return {
+      effort: defaults.effort,
+      budgetTokens: defaults.budgetTokens,
+      messages: messages || [],
+      matched: false,
+      fromKeyword: { effort: false, budget: false },
+    };
   }
 
   let effort;
   let budgetTokens;
-  let matched = false;
+  const fromKeyword = { effort: false, budget: false };
 
-  // Walk newest→oldest, first hit wins. Each dimension (effort vs budget) is
-  // resolved independently so a user can set effort in turn 5 and budget in
-  // turn 3 — both stick until overridden.
   for (let i = messages.length - 1; i >= 0; i--) {
     if (effort !== undefined && budgetTokens !== undefined) break;
     const text = userTextOf(messages[i]);
@@ -156,30 +234,34 @@ export function parseEffortKeywords(messages, defaults = {}) {
     const found = lastKeywordsIn(text);
     if (effort === undefined && found.effort !== undefined) {
       effort = found.effort;
-      matched = true;
+      fromKeyword.effort = true;
     }
     if (budgetTokens === undefined && found.budgetTokens !== undefined) {
       budgetTokens = found.budgetTokens;
-      matched = true;
+      fromKeyword.budget = true;
     }
   }
 
-  // Strip keywords from every user message — the API never sees them.
   const cleaned = messages.map(msg => {
     if (!msg || msg.role !== "user") return msg;
     return { ...msg, content: cleanUserContent(msg.content) };
   });
 
-  // Fallback to defaults for whichever dimension the user didn't override.
   if (effort === undefined && defaults.effort !== undefined) effort = defaults.effort;
   if (budgetTokens === undefined && defaults.budgetTokens !== undefined) budgetTokens = defaults.budgetTokens;
 
-  return { effort, budgetTokens, messages: cleaned, matched };
+  return {
+    effort,
+    budgetTokens,
+    messages: cleaned,
+    matched: fromKeyword.effort || fromKeyword.budget,
+    fromKeyword,
+  };
 }
 
-// Thrown when a user requests `[effortlevel:max]` for a model that doesn't
-// support it. The router catches this and surfaces it as a stream-side error
-// instead of forwarding to the API.
+// Thrown when an effort/thinking request violates the model's capability set.
+// The chat handler turns this into a 400 with the error message so the user
+// sees the actual problem instead of a generic API error.
 export class EffortValidationError extends Error {
   constructor(message) {
     super(message);

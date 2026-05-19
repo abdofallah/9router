@@ -5,10 +5,12 @@ import { adjustMaxTokens } from "../helpers/maxTokensHelper.js";
 import {
   EFFORT_TO_BUDGET,
   EffortValidationError,
+  allowedEffortLevels,
+  getEffortCapability,
   isAdaptiveThinkingModel,
   parseEffortKeywords,
-  supportsMaxEffort,
-  supportsXHighEffort,
+  supportsEffort,
+  supportsManualThinking,
 } from "../../utils/claudeEffort.js";
 
 // Empty prefix matches real Claude Code behavior (no tool name prefix).
@@ -57,18 +59,56 @@ export function openaiToClaudeRequest(model, body, stream) {
   const resolvedEffort = parsed.effort;
   const resolvedBudgetTokens = parsed.budgetTokens;
 
-  // Model-support validation — surfaced as stream-side errors by the chat
-  // handler, not silently clamped. Per the Claude effort spec:
-  //   max   → Opus 4.6+, Sonnet 4.6+, Mythos Preview
-  //   xhigh → Opus 4.7+ exclusively
-  if (resolvedEffort === "max" && !supportsMaxEffort(model)) {
+  // Validation policy — strict for explicit user intent, lenient for legacy
+  // sources so OpenAI-style clients keep working:
+  //
+  //   STRICT (throws EffortValidationError):
+  //     - [effortlevel:X] / [thinkingbudget:N] keyword in user text
+  //     - body._9rEffortDefault / body._9rThinkingBudgetDefault (set by the
+  //       MITM antigravity handler from per-alias dashboard config — the
+  //       dashboard validates at save, so an invalid value here means the
+  //       saved config went stale and the user should re-pick)
+  //     - explicit body.thinking.type:"enabled" on a model that rejects it
+  //
+  //   LENIENT (silently dropped by the emission block):
+  //     - body.reasoning_effort (OpenAI-format compatibility shim)
+  //     - body.output_config.effort (already in Claude format — pass through)
+  //
+  // Unknown / non-Claude models (cap.class === null) skip all Claude-specific
+  // emission anyway, so validation noops there.
+  const cap = getEffortCapability(model);
+  const effortFromKeyword = parsed.fromKeyword.effort;
+  const budgetFromKeyword = parsed.fromKeyword.budget;
+  const effortFromAliasDefault = body._9rEffortDefault !== undefined;
+  const budgetFromAliasDefault = body._9rThinkingBudgetDefault !== undefined;
+  const effortIsStrict = effortFromKeyword || effortFromAliasDefault;
+  const budgetIsStrict = budgetFromKeyword || budgetFromAliasDefault;
+
+  if (resolvedEffort && effortIsStrict && cap.class) {
+    if (!cap.effort) {
+      throw new EffortValidationError(
+        `${model} does not support the effort parameter. Effort is available on Mythos, Opus 4.7, Opus 4.6, Sonnet 4.6, and Opus 4.5.${effortFromKeyword ? " Remove the [effortlevel:…] keyword or pick a different model." : ""}`
+      );
+    }
+    const allowed = allowedEffortLevels(model);
+    if (!allowed.has(resolvedEffort)) {
+      throw new EffortValidationError(
+        `[effortlevel:${resolvedEffort}] is not valid for ${model}. Allowed levels on this model: ${[...allowed].join(", ")}.`
+      );
+    }
+  }
+
+  if (resolvedBudgetTokens > 0 && budgetIsStrict && cap.class && !cap.manualBudget) {
     throw new EffortValidationError(
-      `[effortlevel:max] is only valid for Opus 4.6+, Sonnet 4.6+ (got: ${model}). Use [effortlevel:high] instead.`
+      `[thinkingbudget:${resolvedBudgetTokens}] is not allowed on ${model}. ${cap.adaptive ? "This model uses adaptive thinking — set [effortlevel:…] instead." : "Manual thinking budget is not supported on this model."}`
     );
   }
-  if (resolvedEffort === "xhigh" && !supportsXHighEffort(model)) {
+
+  // Explicit body.thinking.type:enabled on Mythos / Opus 4.7 → reject early so
+  // we surface a clear error instead of the upstream 400.
+  if (body.thinking?.type === "enabled" && cap.class && !cap.manualBudget) {
     throw new EffortValidationError(
-      `[effortlevel:xhigh] is only valid for Opus 4.7+ (got: ${model}). Use [effortlevel:max] for Opus 4.6 / Sonnet 4.6, or [effortlevel:high] for older models.`
+      `Manual thinking (thinking.type:"enabled") is not allowed on ${model}. Use thinking.type:"adaptive"${cap.effort ? ' with output_config.effort' : ''} instead.`
     );
   }
 
@@ -220,49 +260,51 @@ Respond ONLY with the JSON object, no other text.`);
     result.tool_choice = convertOpenAIToolChoice(body.tool_choice);
   }
 
-  // Thinking + effort emission — two paths:
+  // Thinking + effort emission — driven by the per-model capability matrix.
   //
-  //   Modern (opus-4-6, sonnet-4-6+): adaptive thinking + output_config.effort
-  //     thinking: { type: "adaptive" }
-  //     output_config: { effort: "<level>" }    ← only when explicitly set
+  //   Adaptive-capable (Mythos, Opus 4.7, Opus 4.6, Sonnet 4.6):
+  //     thinking: { type: "adaptive" } unless [thinkingbudget:N] explicitly
+  //     requested (and model also supports manual — Opus 4.7 doesn't, so the
+  //     validator above already rejected). output_config.effort attached when
+  //     a level is set.
   //
-  //   Older (sonnet-4, haiku-4, opus-4, etc.): budget-based thinking, no effort
+  //   Effort + manual (Opus 4.5 only):
   //     thinking: { type: "enabled", budget_tokens: N }
+  //     output_config: { effort } — both fields coexist on Opus 4.5.
   //
-  // Precedence inside parseEffortKeywords already resolved the winning effort
-  // and budget. An explicit `body.thinking` object from upstream still wins
-  // over our heuristic — same as before — so callers can force a specific
-  // payload if they know exactly what they want.
+  //   Budget-only (Sonnet 4.5 / Haiku 4.5 / older Claude 4):
+  //     thinking: { type: "enabled", budget_tokens: N }
+  //     No output_config.effort. Effort hints from reasoning_effort are
+  //     translated to a budget via EFFORT_TO_BUDGET as a legacy shim.
+  //
+  //   Unknown / non-Claude: emit nothing — the upstream provider may have its
+  //   own handling.
+  //
+  // An explicit body.thinking still wins (validated above so we only see
+  // model-compatible payloads here).
 
   if (body.thinking) {
-    // Caller-supplied thinking payload wins — passthrough unchanged.
     result.thinking = {
       type: body.thinking.type || "enabled",
       ...(body.thinking.budget_tokens && { budget_tokens: body.thinking.budget_tokens }),
       ...(body.thinking.max_tokens && { max_tokens: body.thinking.max_tokens })
     };
-  } else if (isAdaptiveThinkingModel(model)) {
-    // Modern model — emit adaptive thinking. budget_tokens is NOT allowed
-    // alongside adaptive; an explicit [thinkingbudget:N] downgrades to enabled.
-    if (resolvedBudgetTokens !== undefined && resolvedBudgetTokens > 0) {
-      result.thinking = { type: "enabled", budget_tokens: resolvedBudgetTokens };
-    } else {
-      result.thinking = { type: "adaptive" };
-    }
-  } else if (resolvedBudgetTokens !== undefined && resolvedBudgetTokens > 0) {
-    // Older model with explicit budget request.
+  } else if (cap.adaptive && !(resolvedBudgetTokens > 0)) {
+    // Adaptive-capable model + no explicit budget → adaptive thinking.
+    result.thinking = { type: "adaptive" };
+  } else if (resolvedBudgetTokens > 0 && cap.manualBudget) {
+    // Explicit budget request on a model that supports manual thinking.
     result.thinking = { type: "enabled", budget_tokens: resolvedBudgetTokens };
-  } else if (resolvedEffort && resolvedEffort !== "none") {
-    // Older model with only an effort hint — map to a budget so the request
-    // is still meaningful. This preserves legacy reasoning_effort behavior.
+  } else if (resolvedEffort && cap.manualBudget && !cap.effort) {
+    // Budget-only Claude (e.g. Sonnet 4.5, Haiku 4.5): translate effort hint
+    // into an equivalent budget so OpenAI-style reasoning_effort works.
     const budget = EFFORT_TO_BUDGET[resolvedEffort];
     if (budget) result.thinking = { type: "enabled", budget_tokens: budget };
   }
 
-  // output_config.effort — only attached when the model actually supports the
-  // effort dimension (adaptive-capable models). For older models we already
-  // expressed the intent via budget_tokens above.
-  if (resolvedEffort && resolvedEffort !== "none" && isAdaptiveThinkingModel(model)) {
+  // output_config.effort — attached only on effort-supporting models, only
+  // when the resolved level is in that model's allowed set (validated above).
+  if (resolvedEffort && cap.effort) {
     result.output_config = { ...(result.output_config || {}), effort: resolvedEffort };
   }
 
