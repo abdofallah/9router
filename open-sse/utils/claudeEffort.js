@@ -8,10 +8,19 @@
 //   [effortlevel:high]      → bumps output_config.effort
 //   [thinkingbudget:8192]   → forces budget-based thinking with the given tokens
 
-export const EFFORT_LEVELS = ["low", "medium", "high", "max"];
+// Per the Claude effort spec (platform.claude.com/docs/en/build-with-claude/effort):
+//   low, medium, high — all effort-supporting models (default: high)
+//   max               — Mythos Preview, Opus 4.7, Opus 4.6, Sonnet 4.6
+//   xhigh             — Opus 4.7 ONLY (extended capability for long-horizon work)
+// `xhigh` is a real distinct level (between high and max in intensity),
+// not an alias for max.
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 
-// Effort-to-budget mapping for older models that don't support output_config.effort.
-// Numbers chosen to keep the existing OpenAI reasoning_effort behavior intact.
+// Fallback effort→budget mapping for older models that lack output_config.effort
+// support (pre-4.6 Claudes). Modern models go through adaptive thinking +
+// output_config.effort instead, so these numbers are only used as a legacy
+// reasoning_effort shim. xhigh is intentionally omitted — it's Opus 4.7-only
+// and would never reach this branch (the support check rejects it first).
 export const EFFORT_TO_BUDGET = {
   low: 4096,
   medium: 8192,
@@ -30,27 +39,45 @@ export function isAdaptiveThinkingModel(model) {
       || /claude-(?:opus|sonnet|haiku)-4-(?:6|7|8|9)/.test(m);
 }
 
-// 'max' effort is Opus-only. Sonnet/Haiku clamp to 'high' upstream, but per
-// user policy we surface an explicit error instead of silently clamping.
+// `max` effort: Mythos Preview, Opus 4.7, Opus 4.6, Sonnet 4.6. Haiku and older
+// Claudes don't accept it. Per user policy we error rather than silently clamp.
 export function supportsMaxEffort(model) {
   if (!model || typeof model !== "string") return false;
-  return /opus-4-(?:6|7|8|9)\b/.test(model.toLowerCase());
+  const m = model.toLowerCase();
+  // opus-4-6/4-7/4-8/4-9, sonnet-4-6/4-7+, plus future mythos-* preview lineage.
+  return /opus-4-(?:6|7|8|9)\b/.test(m)
+      || /sonnet-4-(?:6|7|8|9)\b/.test(m)
+      || /mythos/.test(m);
 }
 
-// Regexes — case-insensitive, single-line, anchored to literal brackets.
-// We intentionally keep the format strict (no whitespace inside brackets) to
-// avoid accidental matches in code blocks or quoted text.
-const EFFORT_RE  = /\[effortlevel:(low|medium|high|max)\]/gi;
-const BUDGET_RE  = /\[thinkingbudget:(\d{2,7})\]/gi;
+// `xhigh` effort: Opus 4.7 only (and forward — 4.8/4.9 reserved).
+export function supportsXHighEffort(model) {
+  if (!model || typeof model !== "string") return false;
+  return /opus-4-(?:7|8|9)\b/.test(model.toLowerCase());
+}
+
+// Two-tier regexes — strict for capturing valid values, permissive for stripping.
+//
+// The strict regex enforces the canonical level vocabulary (low/medium/high/
+// xhigh/max — per the official Claude effort spec). The permissive strip regex
+// catches ANY `[effortlevel:foo]` or `[thinkingbudget:bar]` token, so typos
+// or unrecognized values are still removed from user prompts rather than
+// being surfaced to the model verbatim.
+const EFFORT_RE        = /\[effortlevel:(low|medium|high|xhigh|max)\]/gi;
+const BUDGET_RE        = /\[thinkingbudget:(\d{2,7})\]/gi;
+const EFFORT_STRIP_RE  = /\[effortlevel:[^\]\n]*\]/gi;
+const BUDGET_STRIP_RE  = /\[thinkingbudget:[^\]\n]*\]/gi;
 
 // Strip all keyword occurrences from a string. Also collapses the surrounding
 // whitespace so we don't leave "Hello   world" if the keyword was sandwiched.
+// Uses the permissive strip regexes so unrecognized values are also removed.
 function stripKeywords(text) {
   if (!text) return text;
   return text
-    .replace(EFFORT_RE, "")
-    .replace(BUDGET_RE, "")
+    .replace(EFFORT_STRIP_RE, "")
+    .replace(BUDGET_STRIP_RE, "")
     .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")     // drop trailing-of-line whitespace
     .replace(/\n[ \t]+\n/g, "\n\n")
     .trim();
 }
