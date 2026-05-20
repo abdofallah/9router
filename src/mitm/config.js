@@ -28,12 +28,25 @@ const URL_PATTERNS = {
   cursor: ["/BidiAppend", "/RunSSE", "/RunPoll", "/Run"],
 };
 
-// Synonym map: rawModel from request → canonical alias key in mitmAlias DB
+// Synonym map: rawModel from request → canonical alias key in mitmAlias DB.
+//
+// Antigravity's quota UI calls the two Flash tiers "Flash (High)" and
+// "Flash (Medium)", but the actual upstream model IDs (captured via MITM
+// debug log on 2026-05-20) are:
+//   - gemini-3-flash-agent   ← what AG sends for the "High" tier
+//   - gemini-3.5-flash-low   ← what AG sends for the "Medium" tier
+// These names don't follow the obvious convention — `gemini-3.5-flash` and
+// `gemini-3.5-flash-medium` / `gemini-3.5-flash-high` all return 404 from
+// daily-cloudcode-pa.googleapis.com.
 const MODEL_SYNONYMS = {
   antigravity: {
-    "gemini-default": "gemini-3.5-flash",
-    "gemini-3.5-flash": "gemini-3.5-flash",
-    "gemini-3-flash": "gemini-3-flash",
+    "gemini-default":         "gemini-3-flash-agent",
+    "gemini-3-flash-agent":   "gemini-3-flash-agent",
+    "gemini-3.5-flash-low":   "gemini-3.5-flash-low",
+    // Legacy aliases — point at the closest current model so old dashboard
+    // configs keep working until the user re-maps.
+    "gemini-3.5-flash":       "gemini-3.5-flash-low",
+    "gemini-3-flash":         "gemini-3-flash-agent",
     // TODO: Enable when Antigravity officially lists Claude Opus 4.7.
     // "claude-opus-4-7-thinking": "claude-opus-4-7-thinking",
     // "claude-opus-4-7": "claude-opus-4-7-thinking",
@@ -43,10 +56,13 @@ const MODEL_SYNONYMS = {
 };
 
 // Pattern fallback: rawModel regex → canonical alias key (when exact + prefix match fail)
-// Order matters: more specific patterns first. Catches AG renamed variants (e.g. gemini-pro-agent)
+// Order matters: more specific patterns first.
 const MODEL_PATTERNS = {
   antigravity: [
-    { match: /flash/i,                   alias: "gemini-3.5-flash" },
+    { match: /3[.-]?5[.-]?flash[.-]?low|flash[.-]?low/i, alias: "gemini-3.5-flash-low" },
+    { match: /3[.-]?flash[.-]?agent|flash[.-]?agent/i,   alias: "gemini-3-flash-agent" },
+    { match: /3[.-]?5[.-]?flash/i,       alias: "gemini-3.5-flash-low" }, // any 3.5 flash → medium tier
+    { match: /flash/i,                   alias: "gemini-3-flash-agent" }, // any other flash → high tier
     { match: /pro.*low|low.*pro/i,       alias: "gemini-3.1-pro-low" },
     { match: /gemini.*pro|pro.*gemini/i, alias: "gemini-3.1-pro-high" },
     // TODO: Enable Opus 4.7 fallback when Antigravity officially lists it.

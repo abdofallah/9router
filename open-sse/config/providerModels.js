@@ -95,8 +95,10 @@ export const PROVIDER_MODELS = {
   ag: [  // Antigravity - special case: models call different backends
     { id: "gemini-3.1-pro-high", name: "Gemini 3 Pro High" },
     { id: "gemini-3.1-pro-low", name: "Gemini 3 Pro Low" },
-    { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash", thinking: false }, // AG strips thinking for this model
-    { id: "gemini-3-flash", name: "Gemini 3 Flash", thinking: false }, // Legacy AG flash alias
+    // Flash tiers — upstream model IDs verified via MITM debug capture
+    // 2026-05-20. Antigravity's quota UI relabels these as "High" / "Medium".
+    { id: "gemini-3-flash-agent", name: "Gemini 3.5 Flash (High)", thinking: false },
+    { id: "gemini-3.5-flash-low", name: "Gemini 3.5 Flash (Medium)", thinking: false },
     { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
     // TODO: Enable when Antigravity officially lists Claude Opus 4.7.
     // { id: "claude-opus-4-7-thinking", name: "Claude Opus 4.7 Thinking" },

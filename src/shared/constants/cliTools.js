@@ -9,13 +9,16 @@ export const MITM_TOOLS = {
     configType: "mitm",
     mitmDomain: "daily-cloudcode-pa.googleapis.com",
     // TODO: Enable claude-opus-4-7-thinking when Antigravity officially lists Claude Opus 4.7.
-    modelAliases: ["claude-opus-4-6-thinking", "claude-sonnet-4-6", "gemini-3.5-flash", "gemini-3-flash", "gpt-oss-120b-medium", "gemini-3-pro-high", "gemini-3-pro-low", "gemini-pro-agent"],
+    // Flash tier model IDs verified via MITM debug capture 2026-05-20 — see open-sse/config/providerModels.js.
+    modelAliases: ["claude-opus-4-6-thinking", "claude-sonnet-4-6", "gemini-3-flash-agent", "gemini-3.5-flash-low", "gpt-oss-120b-medium", "gemini-3-pro-high", "gemini-3-pro-low", "gemini-pro-agent"],
     defaultModels: [
       { id: "gemini-pro-agent", name: "Gemini Pro Agent (AG v1.23+ Agent Mode)", alias: "gemini-pro-agent" },
       { id: "gemini-3.1-pro-high", name: "Gemini 3.1 Pro High", alias: "gemini-3.1-pro-high" },
       { id: "gemini-3.1-pro-low", name: "Gemini 3.1 Pro Low", alias: "gemini-3.1-pro-low" },
-      { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash / Default", alias: "gemini-3.5-flash" },
-      { id: "gemini-3-flash", name: "Gemini 3 Flash (Legacy)", alias: "gemini-3-flash" },
+      // Antigravity labels these "Flash (High)" / "Flash (Medium)" in its quota
+      // UI; the upstream model IDs are gemini-3-flash-agent / gemini-3.5-flash-low.
+      { id: "gemini-3-flash-agent", name: "Gemini 3.5 Flash (High)", alias: "gemini-3-flash-agent" },
+      { id: "gemini-3.5-flash-low", name: "Gemini 3.5 Flash (Medium)", alias: "gemini-3.5-flash-low" },
       { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", alias: "claude-sonnet-4-6" },
       // TODO: Enable when Antigravity officially lists Claude Opus 4.7.
       // { id: "claude-opus-4-7-thinking", name: "Claude Opus 4.7 Thinking", alias: "claude-opus-4-7-thinking" },
