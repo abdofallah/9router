@@ -9,6 +9,10 @@ import {
   supportsEffort,
   supportsManualThinking,
 } from "open-sse/utils/claudeEffort.js";
+import {
+  allowedCodexReasoningLevels,
+  isCodexProviderModel,
+} from "open-sse/utils/codexReasoning.js";
 
 // GET - Get MITM aliases for a tool
 export async function GET(request) {
@@ -81,9 +85,20 @@ export async function PUT(request) {
             entry.thinkingBudget = Math.floor(budget);
           }
         }
+        const rawReasoning = value.reasoning ? String(value.reasoning).toLowerCase() : "";
+        if (rawReasoning) {
+          if (!isCodexProviderModel(modelStr)) {
+            errors.push(`${alias}: reasoning only applies to Codex provider models`);
+          } else if (!allowedCodexReasoningLevels.includes(rawReasoning)) {
+            const allowed = allowedCodexReasoningLevels.join(", ");
+            errors.push(`${alias}: reasoning "${rawReasoning}" not valid for ${modelStr} (allowed: ${allowed})`);
+          } else {
+            entry.reasoning = rawReasoning;
+          }
+        }
         // Collapse to bare string when no extras are set — keeps the data file
         // identical to the legacy format and avoids object churn in diffs.
-        filtered[alias] = entry.effort || entry.thinkingBudget ? entry : modelStr;
+        filtered[alias] = entry.effort || entry.thinkingBudget || entry.reasoning ? entry : modelStr;
       }
     }
 
