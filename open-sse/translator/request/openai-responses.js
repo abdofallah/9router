@@ -7,6 +7,7 @@
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { normalizeResponsesInput } from "../helpers/responsesApiHelper.js";
+import { applyCodexReasoningConfig } from "../../utils/codexReasoning.js";
 
 // Responses API enforces max 64 chars on call_id (#393)
 const MAX_CALL_ID_LEN = 64;
@@ -200,7 +201,7 @@ function normalizeToolParameters(params) {
  */
 export function openaiToOpenAIResponsesRequest(model, body, stream, credentials) {
   // Body already in Responses API format (e.g. Cursor CLI calling /chat/completions with input[])
-  if (body.input) return { ...body, model, stream: true };
+  if (body.input) return applyCodexReasoningConfig({ ...body, model, stream: true }, model);
 
   const result = {
     model,
@@ -309,8 +310,9 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
   if (body.temperature !== undefined) result.temperature = body.temperature;
   if (body.max_tokens !== undefined) result.max_tokens = body.max_tokens;
   if (body.top_p !== undefined) result.top_p = body.top_p;
+  if (body._9rReasoningDefault !== undefined) result._9rReasoningDefault = body._9rReasoningDefault;
 
-  return result;
+  return applyCodexReasoningConfig(result, model);
 }
 
 // Register both directions

@@ -174,6 +174,19 @@ export function createSSEStream(options = {}) {
         const parsed = parseSSELine(trimmed, targetFormat);
         if (!parsed) continue;
 
+        // Forward provider keepalives as SSE comment lines.
+        // Claude emits `{"type":"ping"}` during long generations, especially
+        // while building large tool_use input_json_delta payloads. Translators
+        // drop unknown event types, and some downstream translators buffer
+        // tool_calls until finish_reason. A `: ping\n\n` SSE comment is ignored
+        // by clients but keeps bytes flowing through the stream.
+        if (parsed?.type === "ping") {
+          const output = ": ping\n\n";
+          reqLogger?.appendConvertedChunk?.(output);
+          controller.enqueue(sharedEncoder.encode(output));
+          continue;
+        }
+
         // For Ollama: done=true is the final chunk with finish_reason/usage, must translate
         // For other formats: done=true is the [DONE] sentinel, skip
         if (parsed && parsed.done && targetFormat !== FORMATS.OLLAMA) {

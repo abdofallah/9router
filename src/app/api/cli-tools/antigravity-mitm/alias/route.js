@@ -4,6 +4,11 @@ import { NextResponse } from "next/server";
 import { getMitmAlias, setMitmAliasAll } from "@/models";
 import { getMitmStatus } from "@/mitm/manager";
 import { writeAliasForTool } from "@/lib/mitmAliasCache";
+import {
+  allowedEffortLevels,
+  supportsEffort,
+  supportsManualThinking,
+} from "open-sse/utils/claudeEffort.js";
 
 // GET - Get MITM aliases for a tool
 export async function GET(request) {
@@ -36,11 +41,54 @@ export async function PUT(request) {
       );
     }
 
+    // Mapping values are either:
+    //   - a plain string ("provider/modelId") — legacy form for non-antigravity tools
+    //   - an object { model, effort?, thinkingBudget? } — used for antigravity per-alias config
+    //
+    // Effort/budget extras are validated against the model's published capability
+    // matrix (see open-sse/utils/claudeEffort.js). Saves that pair an invalid
+    // level with a model are rejected so the dashboard never persists garbage.
     const filtered = {};
-    for (const [alias, model] of Object.entries(mappings)) {
-      if (model && model.trim()) {
-        filtered[alias] = model.trim();
+    const errors = [];
+    for (const [alias, value] of Object.entries(mappings)) {
+      if (!value) continue;
+      if (typeof value === "string") {
+        if (value.trim()) filtered[alias] = value.trim();
+        continue;
       }
+      if (typeof value === "object") {
+        const modelStr = typeof value.model === "string" ? value.model.trim() : "";
+        if (!modelStr) continue;
+        const entry = { model: modelStr };
+        const rawEffort = value.effort ? String(value.effort).toLowerCase() : "";
+        if (rawEffort) {
+          if (!supportsEffort(modelStr)) {
+            errors.push(`${alias}: model ${modelStr} does not support the effort parameter`);
+          } else if (!allowedEffortLevels(modelStr).has(rawEffort)) {
+            const allowed = [...allowedEffortLevels(modelStr)].join(", ");
+            errors.push(`${alias}: effort "${rawEffort}" not valid for ${modelStr} (allowed: ${allowed})`);
+          } else {
+            entry.effort = rawEffort;
+          }
+        }
+        const budget = Number(value.thinkingBudget);
+        if (Number.isFinite(budget) && budget > 0) {
+          if (budget > 128000) {
+            errors.push(`${alias}: thinkingBudget ${budget} exceeds the 128000 cap`);
+          } else if (!supportsManualThinking(modelStr)) {
+            errors.push(`${alias}: model ${modelStr} does not support manual thinking budget`);
+          } else {
+            entry.thinkingBudget = Math.floor(budget);
+          }
+        }
+        // Collapse to bare string when no extras are set — keeps the data file
+        // identical to the legacy format and avoids object churn in diffs.
+        filtered[alias] = entry.effort || entry.thinkingBudget ? entry : modelStr;
+      }
+    }
+
+    if (errors.length > 0) {
+      return NextResponse.json({ error: errors.join("; ") }, { status: 400 });
     }
 
     await setMitmAliasAll(tool, filtered);

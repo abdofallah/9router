@@ -1,6 +1,7 @@
 # v0.4.63 (2026-05-26)
 
 ## Fixes
+- MITM: stop recursive restart attempts when recovery finds the server is already running (#1462; related DNS/ALPN reports: #1476, #1470)
 - proxyFetch: restore missing `Readable` import causing runtime `ReferenceError` in DNS-bypass fetch path
 
 ## Improvements

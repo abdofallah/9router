@@ -3,7 +3,24 @@
 import { useState, useEffect, useCallback } from "react";
 import { Card, Button, Badge, Input, ModelSelectModal } from "@/shared/components";
 import { TOOL_HOSTS } from "@/shared/constants/mitmToolHosts";
+import { getEffortCapability } from "open-sse/utils/claudeEffort.js";
 import Image from "next/image";
+
+// Human-readable label for each effort level — shown in the dropdown along with
+// the model-eligibility hint so users know why levels appear/disappear.
+const EFFORT_LABELS = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "XHigh",
+  max: "Max",
+};
+
+const CODEX_REASONING_LABELS = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+};
 
 /**
  * Per-tool MITM card — shows DNS status + model mappings.
@@ -40,6 +57,36 @@ export default function MitmToolCard({
   const mitmHosts = TOOL_HOSTS[tool.id] ?? [];
   const canRunWithoutPassword = isWin || hasCachedPassword || needsSudoPassword === false;
 
+  // Antigravity stores per-alias effort/thinkingBudget overrides; other MITM
+  // tools keep the legacy bare-string mapping.
+  const isAntigravity = tool.id === "antigravity";
+
+  // Value-shape helpers — work on either a bare string (legacy / non-AG tools)
+  // or { model, effort?, thinkingBudget? } (AG). Always return the same shape
+  // the input had so we don't accidentally upgrade non-AG entries to objects.
+  const getModelStr = (v) => (typeof v === "object" && v !== null ? (v.model || "") : (v || ""));
+  const getEffort = (v) => (typeof v === "object" && v !== null ? (v.effort || "") : "");
+  const getBudget = (v) => (typeof v === "object" && v !== null && v.thinkingBudget != null ? String(v.thinkingBudget) : "");
+  const getReasoning = (v) => (typeof v === "object" && v !== null ? (v.reasoning || "") : "");
+  const isCodexProviderModel = (modelStr) => typeof modelStr === "string" && modelStr.toLowerCase().startsWith("cx/");
+
+  // Effort/budget controls are driven by the per-model capability matrix
+  // (see open-sse/utils/claudeEffort.js). Returns:
+  //   { class, supported, effort, levels, adaptive, manualBudget }
+  // — `supported` is true when the model accepts at least one of effort or
+  // manual budget thinking. Non-Claude / unknown targets → all false.
+  const modelCap = (modelStr) => getEffortCapability(modelStr);
+
+  const withField = (v, field, newValue) => {
+    // For antigravity always work in object form so effort/budget can attach;
+    // for other tools, keep as plain string when only the model field is touched.
+    if (!isAntigravity && field === "model") return newValue || "";
+    const obj = typeof v === "object" && v !== null ? { ...v } : { model: typeof v === "string" ? v : "" };
+    obj[field] = newValue;
+    if (obj[field] === "" || obj[field] == null) delete obj[field];
+    return obj;
+  };
+
   useEffect(() => {
     if (isExpanded) loadSavedMappings();
   }, [isExpanded]);
@@ -65,11 +112,37 @@ export default function MitmToolCard({
   }, [tool.id]);
 
   const handleMappingBlur = (alias, value) => {
-    saveMappings({ ...modelMappings, [alias]: value });
+    const updated = { ...modelMappings, [alias]: withField(modelMappings[alias], "model", value) };
+    saveMappings(updated);
   };
 
   const handleModelMappingChange = (alias, value) => {
-    setModelMappings(prev => ({ ...prev, [alias]: value }));
+    setModelMappings(prev => ({ ...prev, [alias]: withField(prev[alias], "model", value) }));
+  };
+
+  // Antigravity-only: change Effort / Budget and persist on every change
+  // (no blur needed for select / sanitized number input).
+  const handleEffortChange = (alias, value) => {
+    setModelMappings(prev => {
+      const updated = { ...prev, [alias]: withField(prev[alias], "effort", value) };
+      saveMappings(updated);
+      return updated;
+    });
+  };
+  const handleBudgetChange = (alias, value) => {
+    const sanitized = value.replace(/[^\d]/g, "");
+    setModelMappings(prev => {
+      const updated = { ...prev, [alias]: withField(prev[alias], "thinkingBudget", sanitized) };
+      saveMappings(updated);
+      return updated;
+    });
+  };
+  const handleReasoningChange = (alias, value) => {
+    setModelMappings(prev => {
+      const updated = { ...prev, [alias]: withField(prev[alias], "reasoning", value) };
+      saveMappings(updated);
+      return updated;
+    });
   };
 
   const openModelSelector = (alias) => {
@@ -79,7 +152,7 @@ export default function MitmToolCard({
 
   const handleModelSelect = (model) => {
     if (!currentEditingAlias || model.isPlaceholder) return;
-    const updated = { ...modelMappings, [currentEditingAlias]: model.value };
+    const updated = { ...modelMappings, [currentEditingAlias]: withField(modelMappings[currentEditingAlias], "model", model.value) };
     setModelMappings(updated);
     saveMappings(updated);
   };
@@ -192,42 +265,124 @@ export default function MitmToolCard({
             {/* Model Mappings */}
             {tool.defaultModels?.length > 0 && (
               <div className="flex flex-col gap-2">
-                {tool.defaultModels.map((model) => (
-                  <div key={model.alias} className="grid grid-cols-1 gap-1.5 sm:grid-cols-[9rem_auto_1fr_auto] sm:items-center sm:gap-2">
-                    <span className="text-xs font-semibold text-text-main sm:text-right">{model.name}</span>
-                    <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
-                    <div className="relative w-full min-w-0">
-                      <input
-                        type="text"
-                        value={modelMappings[model.alias] || ""}
-                        onChange={(e) => handleModelMappingChange(model.alias, e.target.value)}
-                        onBlur={(e) => handleMappingBlur(model.alias, e.target.value)}
-                        placeholder="provider/model-id"
-                        disabled={!dnsActive}
-                        className={`w-full min-w-0 pl-2 pr-7 py-2 bg-surface rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 sm:py-1.5 ${!dnsActive ? "opacity-50 cursor-not-allowed" : ""}`}
-                      />
-                      {modelMappings[model.alias] && (
+                {tool.defaultModels.map((model) => {
+                  const entry = modelMappings[model.alias];
+                  const modelStr = getModelStr(entry);
+                  const cap = isAntigravity ? modelCap(modelStr) : null;
+                  return (
+                    <div key={model.alias} className="flex flex-col gap-1.5">
+                      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[9rem_auto_1fr_auto] sm:items-center sm:gap-2">
+                        <span className="text-xs font-semibold text-text-main sm:text-right">{model.name}</span>
+                        <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline">arrow_forward</span>
+                        <div className="relative w-full min-w-0">
+                          <input
+                            type="text"
+                            value={modelStr}
+                            onChange={(e) => handleModelMappingChange(model.alias, e.target.value)}
+                            onBlur={(e) => handleMappingBlur(model.alias, e.target.value)}
+                            placeholder="provider/model-id"
+                            disabled={!dnsActive}
+                            className={`w-full min-w-0 pl-2 pr-7 py-2 bg-surface rounded border border-border text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 sm:py-1.5 ${!dnsActive ? "opacity-50 cursor-not-allowed" : ""}`}
+                          />
+                          {modelStr && (
+                            <button
+                              onClick={() => {
+                                handleModelMappingChange(model.alias, "");
+                                saveMappings({ ...modelMappings, [model.alias]: withField(modelMappings[model.alias], "model", "") });
+                              }}
+                              className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-text-muted hover:text-red-500 rounded transition-colors"
+                              title="Clear"
+                            >
+                              <span className="material-symbols-outlined text-[14px]">close</span>
+                            </button>
+                          )}
+                        </div>
                         <button
-                          onClick={() => {
-                            handleModelMappingChange(model.alias, "");
-                            saveMappings({ ...modelMappings, [model.alias]: "" });
-                          }}
-                          className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-text-muted hover:text-red-500 rounded transition-colors"
-                          title="Clear"
+                          onClick={() => openModelSelector(model.alias)}
+                          disabled={!hasActiveProviders || !dnsActive}
+                          className={`rounded border px-2 py-2 text-xs transition-colors sm:py-1.5 ${hasActiveProviders && dnsActive ? "bg-surface border-border hover:border-primary cursor-pointer" : "opacity-50 cursor-not-allowed border-border"}`}
                         >
-                          <span className="material-symbols-outlined text-[14px]">close</span>
+                          Select
                         </button>
+                      </div>
+                      {/* Antigravity-only: capability-driven Effort / Budget controls.
+                          - effort dropdown shown only when the model class supports the
+                            effort parameter; the option list is filtered to the model's
+                            allowed levels (e.g. xhigh appears only on Opus 4.7).
+                          - budget input shown only when the model accepts manual thinking
+                            budget — adaptive-only models (Mythos, Opus 4.7) hide it.
+                          - whole sub-row hidden when the model supports neither.
+                          Overridden at chat time by [effortlevel:X] / [thinkingbudget:N]. */}
+                      {isAntigravity && cap?.supported && (
+                        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[9rem_auto_1fr_auto] sm:items-center sm:gap-2">
+                          <span className="hidden sm:block" />
+                          <span className="hidden sm:block" />
+                          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                            {cap.effort && (
+                              <>
+                                <label className="text-[11px] text-text-muted whitespace-nowrap">Effort</label>
+                                <select
+                                  value={getEffort(entry)}
+                                  onChange={(e) => handleEffortChange(model.alias, e.target.value)}
+                                  disabled={!dnsActive}
+                                  className={`min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 ${!dnsActive ? "opacity-50 cursor-not-allowed" : ""}`}
+                                  title={`Effort levels available on ${cap.class}: ${cap.levels.join(", ")}`}
+                                >
+                                  <option value="">Auto (high)</option>
+                                  {cap.levels.map((lvl) => (
+                                    <option key={lvl} value={lvl}>{EFFORT_LABELS[lvl] || lvl}</option>
+                                  ))}
+                                </select>
+                              </>
+                            )}
+                            {cap.manualBudget && (
+                              <>
+                                <label className={`text-[11px] text-text-muted whitespace-nowrap ${cap.effort ? "ml-2" : ""}`}>Budget</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="128000"
+                                  step="1024"
+                                  value={getBudget(entry)}
+                                  onChange={(e) => handleBudgetChange(model.alias, e.target.value)}
+                                  disabled={!dnsActive}
+                                  placeholder={cap.adaptive ? "adaptive" : "auto"}
+                                  title={cap.adaptive
+                                    ? "Optional thinking budget (tokens). Leave empty to use adaptive thinking."
+                                    : "Thinking budget in tokens. Leave empty for the model default."}
+                                  className={`w-24 min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 ${!dnsActive ? "opacity-50 cursor-not-allowed" : ""}`}
+                                />
+                              </>
+                            )}
+                          </div>
+                          <span className="hidden sm:block" />
+                        </div>
+                      )}
+                      {isAntigravity && isCodexProviderModel(modelStr) && (
+                        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[9rem_auto_1fr_auto] sm:items-center sm:gap-2">
+                          <span className="hidden sm:block" />
+                          <span className="hidden sm:block" />
+                          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                            <label className="text-[11px] text-text-muted whitespace-nowrap">Reasoning</label>
+                            <select
+                              value={getReasoning(entry)}
+                              onChange={(e) => handleReasoningChange(model.alias, e.target.value)}
+                              disabled={!dnsActive}
+                              className={`min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 ${!dnsActive ? "opacity-50 cursor-not-allowed" : ""}`}
+                              title="Default Codex reasoning level. Override per prompt with [reasoninglevel:low|medium|high]."
+                            >
+                              <option value="">Auto (low)</option>
+                              {Object.entries(CODEX_REASONING_LABELS).map(([lvl, label]) => (
+                                <option key={lvl} value={lvl}>{label}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <span className="hidden sm:block" />
+                        </div>
                       )}
                     </div>
-                    <button
-                      onClick={() => openModelSelector(model.alias)}
-                      disabled={!hasActiveProviders || !dnsActive}
-                      className={`rounded border px-2 py-2 text-xs transition-colors sm:py-1.5 ${hasActiveProviders && dnsActive ? "bg-surface border-border hover:border-primary cursor-pointer" : "opacity-50 cursor-not-allowed border-border"}`}
-                    >
-                      Select
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 

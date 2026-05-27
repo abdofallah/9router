@@ -104,6 +104,10 @@ function extractModel(url, body) {
   } catch { return null; }
 }
 
+// Resolve a model alias to its raw config. Returns either:
+//   - a string: "provider/modelId"           (legacy / non-antigravity tools)
+//   - an object: { model, effort?, thinkingBudget? }  (antigravity per-model overrides)
+//   - null if no mapping exists.
 function getMappedModel(tool, model) {
   if (!model) return null;
   try {
@@ -122,6 +126,15 @@ function getMappedModel(tool, model) {
     }
     return null;
   } catch { return null; }
+}
+
+// Return the string model id from a mapped alias (handles both string and object forms).
+// Used by handlers that only need the model name and don't care about effort/budget metadata.
+function getMappedModelString(mapped) {
+  if (!mapped) return null;
+  if (typeof mapped === "string") return mapped;
+  if (typeof mapped === "object" && typeof mapped.model === "string") return mapped.model;
+  return null;
 }
 
 /**
@@ -334,7 +347,14 @@ const server = https.createServer(sslOptions, async (req, res) => {
       return passthrough(req, res, bodyBuffer);
     }
 
-    return handlers[tool].intercept(req, res, bodyBuffer, mappedModel, passthrough);
+    // Antigravity is the only tool that consumes the structured object form
+    // (with optional effort/thinkingBudget). All other handlers expect a string.
+    const handlerArg = tool === "antigravity" ? mappedModel : getMappedModelString(mappedModel);
+    if (!handlerArg) {
+      return passthrough(req, res, bodyBuffer);
+    }
+
+    return handlers[tool].intercept(req, res, bodyBuffer, handlerArg, passthrough);
   } catch (e) {
     err(`Unhandled error: ${e.message}`);
     if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
