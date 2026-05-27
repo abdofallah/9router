@@ -12,13 +12,16 @@ export function antigravityToOpenAIRequest(model, body, stream) {
     stream: stream
   };
 
-  // Per-alias effort/thinking defaults stamped by the MITM antigravity handler.
-  // Propagated verbatim so openai-to-claude can apply keyword-override precedence.
+  // Per-alias effort/thinking/reasoning defaults stamped by the MITM antigravity handler.
+  // Propagated verbatim so provider translators can apply keyword-override precedence.
   if (body._9rEffortDefault !== undefined) {
     result._9rEffortDefault = body._9rEffortDefault;
   }
   if (body._9rThinkingBudgetDefault !== undefined) {
     result._9rThinkingBudgetDefault = body._9rThinkingBudgetDefault;
+  }
+  if (body._9rReasoningDefault !== undefined) {
+    result._9rReasoningDefault = body._9rReasoningDefault;
   }
 
   // Generation config

@@ -6,6 +6,7 @@ import {
   getClaudeModelClass,
   getEffortCapability,
   isAdaptiveThinkingModel,
+  isClaudeProviderModel,
   parseEffortKeywords,
   supportsEffort,
   supportsManualThinking,
@@ -34,11 +35,23 @@ describe("claudeEffort util", () => {
       expect(getClaudeModelClass(model)).toBe(klass);
     });
 
-    it("returns null for unknown / non-Claude models", () => {
+    it("returns null for unknown / non-Claude-provider models", () => {
       expect(getClaudeModelClass("")).toBeNull();
       expect(getClaudeModelClass(null)).toBeNull();
       expect(getClaudeModelClass("gpt-4o")).toBeNull();
       expect(getClaudeModelClass("gemini-3-flash")).toBeNull();
+      expect(getClaudeModelClass("openrouter/anthropic/claude-opus-4-7")).toBeNull();
+      expect(getClaudeModelClass("vercel/claude-sonnet-4-6")).toBeNull();
+      expect(getClaudeModelClass("custom/claude-opus-4-5")).toBeNull();
+    });
+
+    it("recognizes only first-party Claude provider routes and bare Claude IDs", () => {
+      expect(isClaudeProviderModel("cc/claude-opus-4-7")).toBe(true);
+      expect(isClaudeProviderModel("claude/claude-sonnet-4-6")).toBe(true);
+      expect(isClaudeProviderModel("claude-opus-4-7")).toBe(true);
+      expect(isClaudeProviderModel("openrouter/anthropic/claude-opus-4-7")).toBe(false);
+      expect(isClaudeProviderModel("anthropic/claude-opus-4-7")).toBe(false);
+      expect(isClaudeProviderModel("custom/claude-sonnet-4-6")).toBe(false);
     });
 
     it("disambiguates plain opus-4 from opus-4-N variants", () => {
@@ -72,6 +85,26 @@ describe("claudeEffort util", () => {
       expect(cap.adaptive).toBe(adaptive);
       expect(cap.manualBudget).toBe(manualBudget);
       expect(cap.supported).toBe(effort || manualBudget);
+    });
+
+    it.each([
+      "openrouter/anthropic/claude-opus-4-7",
+      "vercel/claude-sonnet-4-6",
+      "custom/claude-opus-4-5",
+      "anthropic/claude-sonnet-4-5",
+    ])("does not expose Claude effort/thinking controls for non-Claude provider route %s", (model) => {
+      const cap = getEffortCapability(model);
+      expect(cap).toMatchObject({
+        class: null,
+        effort: false,
+        adaptive: false,
+        manualBudget: false,
+        supported: false,
+        levels: [],
+      });
+      expect(supportsEffort(model)).toBe(false);
+      expect(supportsManualThinking(model)).toBe(false);
+      expect(allowedEffortLevels(model).size).toBe(0);
     });
 
     it("adaptive thinking includes Mythos / Opus 4.7 / Opus 4.6 / Sonnet 4.6 — NOT Haiku or Opus 4.5", () => {

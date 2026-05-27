@@ -7,6 +7,7 @@ import { fetchImageAsBase64 } from "../translator/helpers/imageHelper.js";
 import { getModelUpstreamId } from "../config/providerModels.js";
 import { getConsistentMachineId } from "../../src/shared/utils/machineId.js";
 import { DEFAULT_RETRY_CONFIG, resolveRetryEntry } from "../config/runtimeConfig.js";
+import { applyCodexReasoningConfig } from "../utils/codexReasoning.js";
 import { dbg } from "../utils/debugLog.js";
 
 // SSE error patterns inside 200-OK body that should trigger retry as if 503
@@ -365,6 +366,8 @@ export class CodexExecutor extends BaseExecutor {
     delete body._compact;
     // Resolve conversation-stable session_id (priority: body → assistant-text → workspace → machine)
     this._currentSessionId = resolveCacheSessionId(body, credentials, cachedMachineId);
+    const routedModel = body.model || model;
+    applyCodexReasoningConfig(body, routedModel);
     // Convert string input to array format (Codex API requires input as array)
     const normalized = normalizeResponsesInput(body.input);
     if (normalized) body.input = normalized;

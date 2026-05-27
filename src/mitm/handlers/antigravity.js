@@ -8,11 +8,12 @@ const { fetchRouter, pipeSSE } = require("./base");
  * runs antigravity→openai→provider→openai→antigravity translators internally.
  *
  * mappedModel may be either:
- *   - a string: "provider/modelId"
- *   - an object: { model, effort?, thinkingBudget? } from per-alias UI config.
+ *   - an object: { model, effort?, thinkingBudget?, reasoning? } from per-alias UI config.
  *     effort/thinkingBudget are stamped onto the body as `_9rEffortDefault`
  *     and `_9rThinkingBudgetDefault` so the openai-to-claude translator picks
  *     them up as defaults (overridable by user `[effortlevel:X]` keywords).
+ *     reasoning is stamped as `_9rReasoningDefault` for Codex provider models
+ *     (overridable by user `[reasoninglevel:X]` keywords).
  */
 async function intercept(req, res, bodyBuffer, mappedModel) {
   const dumper = IS_DEV ? createResponseDumper(req, "intercept-antigravity") : null;
@@ -27,6 +28,7 @@ async function intercept(req, res, bodyBuffer, mappedModel) {
     if (isObjectMapping) {
       if (mappedModel.effort) body._9rEffortDefault = mappedModel.effort;
       if (mappedModel.thinkingBudget) body._9rThinkingBudgetDefault = Number(mappedModel.thinkingBudget);
+      if (mappedModel.reasoning) body._9rReasoningDefault = mappedModel.reasoning;
     }
 
     const routerRes = await fetchRouter(body, "/v1/chat/completions", req.headers);

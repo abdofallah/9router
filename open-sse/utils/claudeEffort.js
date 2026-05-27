@@ -41,8 +41,19 @@ export const EFFORT_TO_BUDGET = {
 
 // ── Model class detection ─────────────────────────────────────────────────
 //
-// Matches case-insensitive substrings so vendor prefixes (`cc/`, `anthropic/`,
-// `claude-compat/...`) and date suffixes (`-20251001`) all resolve correctly.
+// Effort/thinking overrides are only safe for 9router's first-party Claude
+// provider route. Dashboard selections are provider-prefixed, so only `cc/...`
+// or `claude/...` may enable these controls. The Claude translator can receive
+// already-unwrapped first-party model IDs, so bare `claude-*` IDs are also
+// accepted for request conversion tests/runtime.
+const CLAUDE_PROVIDER_PREFIX_RE = /^(?:(?:cc|claude)\/|claude-)/i;
+
+export function isClaudeProviderModel(model) {
+  return typeof model === "string" && CLAUDE_PROVIDER_PREFIX_RE.test(model.trim());
+}
+
+// Matches case-insensitive substrings so Claude provider date suffixes
+// (`-20251001`) resolve correctly.
 // Order matters — more specific patterns (opus-4-7) must precede less specific
 // ones (opus-4) so 4.7 isn't accidentally classified as plain "opus-4".
 const MODEL_CLASS_PATTERNS = [
@@ -62,7 +73,7 @@ const MODEL_CLASS_PATTERNS = [
 ];
 
 export function getClaudeModelClass(model) {
-  if (!model || typeof model !== "string") return null;
+  if (!isClaudeProviderModel(model)) return null;
   for (const [klass, re] of MODEL_CLASS_PATTERNS) {
     if (re.test(model)) return klass;
   }

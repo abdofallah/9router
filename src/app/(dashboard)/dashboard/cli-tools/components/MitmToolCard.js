@@ -16,6 +16,12 @@ const EFFORT_LABELS = {
   max: "Max",
 };
 
+const CODEX_REASONING_LABELS = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+};
+
 /**
  * Per-tool MITM card — shows DNS status + model mappings.
  * - Auto-saves model mapping on blur or modal select
@@ -61,6 +67,8 @@ export default function MitmToolCard({
   const getModelStr = (v) => (typeof v === "object" && v !== null ? (v.model || "") : (v || ""));
   const getEffort = (v) => (typeof v === "object" && v !== null ? (v.effort || "") : "");
   const getBudget = (v) => (typeof v === "object" && v !== null && v.thinkingBudget != null ? String(v.thinkingBudget) : "");
+  const getReasoning = (v) => (typeof v === "object" && v !== null ? (v.reasoning || "") : "");
+  const isCodexProviderModel = (modelStr) => typeof modelStr === "string" && modelStr.toLowerCase().startsWith("cx/");
 
   // Effort/budget controls are driven by the per-model capability matrix
   // (see open-sse/utils/claudeEffort.js). Returns:
@@ -125,6 +133,13 @@ export default function MitmToolCard({
     const sanitized = value.replace(/[^\d]/g, "");
     setModelMappings(prev => {
       const updated = { ...prev, [alias]: withField(prev[alias], "thinkingBudget", sanitized) };
+      saveMappings(updated);
+      return updated;
+    });
+  };
+  const handleReasoningChange = (alias, value) => {
+    setModelMappings(prev => {
+      const updated = { ...prev, [alias]: withField(prev[alias], "reasoning", value) };
       saveMappings(updated);
       return updated;
     });
@@ -339,6 +354,28 @@ export default function MitmToolCard({
                                 />
                               </>
                             )}
+                          </div>
+                          <span className="hidden sm:block" />
+                        </div>
+                      )}
+                      {isAntigravity && isCodexProviderModel(modelStr) && (
+                        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[9rem_auto_1fr_auto] sm:items-center sm:gap-2">
+                          <span className="hidden sm:block" />
+                          <span className="hidden sm:block" />
+                          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                            <label className="text-[11px] text-text-muted whitespace-nowrap">Reasoning</label>
+                            <select
+                              value={getReasoning(entry)}
+                              onChange={(e) => handleReasoningChange(model.alias, e.target.value)}
+                              disabled={!dnsActive}
+                              className={`min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 ${!dnsActive ? "opacity-50 cursor-not-allowed" : ""}`}
+                              title="Default Codex reasoning level. Override per prompt with [reasoninglevel:low|medium|high]."
+                            >
+                              <option value="">Auto (low)</option>
+                              {Object.entries(CODEX_REASONING_LABELS).map(([lvl, label]) => (
+                                <option key={lvl} value={lvl}>{label}</option>
+                              ))}
+                            </select>
                           </div>
                           <span className="hidden sm:block" />
                         </div>
