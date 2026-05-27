@@ -1,7 +1,7 @@
-const CODEX_REASONING_LEVEL_RE = /\[reasoninglevel:(low|medium|high)\]/gi;
-const CODEX_REASONING_LEVEL_STRIP_RE = /\[reasoninglevel:[^\]\n]*\]/gi;
+const CODEX_REASONING_LEVEL_RE = /\[reasoninglevel:(low|medium|high|xhigh)\]/gi;
+const CODEX_REASONING_LEVEL_STRIP_RE = /\[reasoninglevel:[^\]]*\]/gi;
 
-export const allowedCodexReasoningLevels = ["low", "medium", "high"];
+export const allowedCodexReasoningLevels = ["low", "medium", "high", "xhigh"];
 
 export function isCodexProviderModel(model) {
   return typeof model === "string" && model.toLowerCase().startsWith("cx/");

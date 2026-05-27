@@ -20,6 +20,7 @@ const CODEX_REASONING_LABELS = {
   low: "Low",
   medium: "Medium",
   high: "High",
+  xhigh: "XHigh",
 };
 
 /**
@@ -369,7 +370,7 @@ export default function MitmToolCard({
                               onChange={(e) => handleReasoningChange(model.alias, e.target.value)}
                               disabled={!dnsActive}
                               className={`min-w-0 px-2 py-1 bg-surface rounded text-[11px] border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 ${!dnsActive ? "opacity-50 cursor-not-allowed" : ""}`}
-                              title="Default Codex reasoning level. Override per prompt with [reasoninglevel:low|medium|high]."
+                              title="Default Codex reasoning level. Override per prompt with [reasoninglevel:low|medium|high|xhigh]."
                             >
                               <option value="">Auto (low)</option>
                               {Object.entries(CODEX_REASONING_LABELS).map(([lvl, label]) => (
