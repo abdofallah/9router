@@ -72,4 +72,29 @@ describe("Codex reasoning request translation", () => {
     expect(result.include).toEqual(["reasoning.encrypted_content"]);
     expect(result._9rReasoningDefault).toBeUndefined();
   });
+  it("executor honors alias default when model arrives without cx/ prefix", () => {
+    const executor = new CodexExecutor();
+    const body = {
+      model: "gpt-5.5",
+      input: "hello",
+      _9rReasoningDefault: "xhigh",
+      reasoning_effort: "medium",
+    };
+
+    const result = executor.transformRequest("gpt-5.5", body, true, {});
+
+    expect(result.reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+    expect(result.include).toEqual(["reasoning.encrypted_content"]);
+    expect(result._9rReasoningDefault).toBeUndefined();
+  });
+
+  it("translator honors alias default when model arrives without cx/ prefix", () => {
+    const result = openaiToOpenAIResponsesRequest("gpt-5.5", {
+      messages: [{ role: "user", content: "hello" }],
+      _9rReasoningDefault: "xhigh",
+      reasoning_effort: "medium",
+    }, true);
+
+    expect(result.reasoning_effort).toBe("xhigh");
+  });
 });

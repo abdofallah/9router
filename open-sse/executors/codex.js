@@ -367,7 +367,13 @@ export class CodexExecutor extends BaseExecutor {
     // Resolve conversation-stable session_id (priority: body → assistant-text → workspace → machine)
     this._currentSessionId = resolveCacheSessionId(body, credentials, cachedMachineId);
     const routedModel = body.model || model;
-    applyCodexReasoningConfig(body, routedModel);
+    // Provider prefix (cx/) is stripped before reaching here, but we know this
+    // executor only runs for Codex traffic — synthesize the prefix so the
+    // shared reasoning helper still recognizes it.
+    const codexModel = typeof routedModel === "string" && routedModel.toLowerCase().startsWith("cx/")
+      ? routedModel
+      : `cx/${routedModel || ""}`;
+    applyCodexReasoningConfig(body, codexModel);
     // Convert string input to array format (Codex API requires input as array)
     const normalized = normalizeResponsesInput(body.input);
     if (normalized) body.input = normalized;

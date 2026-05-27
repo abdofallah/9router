@@ -200,8 +200,14 @@ function normalizeToolParameters(params) {
  * Convert OpenAI Chat Completions to OpenAI Responses API format
  */
 export function openaiToOpenAIResponsesRequest(model, body, stream, credentials) {
+  // The /responses pipeline only runs for Codex traffic; ensure model carries
+  // the cx/ prefix so the shared reasoning helper applies the alias default.
+  const codexModel = typeof model === "string" && model.toLowerCase().startsWith("cx/")
+    ? model
+    : `cx/${model || ""}`;
+
   // Body already in Responses API format (e.g. Cursor CLI calling /chat/completions with input[])
-  if (body.input) return applyCodexReasoningConfig({ ...body, model, stream: true }, model);
+  if (body.input) return applyCodexReasoningConfig({ ...body, model, stream: true }, codexModel);
 
   const result = {
     model,
@@ -311,8 +317,11 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
   if (body.max_tokens !== undefined) result.max_tokens = body.max_tokens;
   if (body.top_p !== undefined) result.top_p = body.top_p;
   if (body._9rReasoningDefault !== undefined) result._9rReasoningDefault = body._9rReasoningDefault;
+  // Forward reasoning_effort so applyCodexReasoningConfig can overwrite it from
+  // the alias default / prompt tag when appropriate.
+  if (body.reasoning_effort !== undefined) result.reasoning_effort = body.reasoning_effort;
 
-  return applyCodexReasoningConfig(result, model);
+  return applyCodexReasoningConfig(result, codexModel);
 }
 
 // Register both directions
