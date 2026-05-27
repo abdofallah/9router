@@ -17,7 +17,7 @@ export async function GET() {
     const { password, oidcClientSecret, ...safeSettings } = settings;
     safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
     
-    const enableRequestLogs = process.env.ENABLE_REQUEST_LOGS === "true";
+    const enableRequestLogs = process.env.ENABLE_REQUEST_LOGS !== "false";
     const enableTranslator = process.env.ENABLE_TRANSLATOR === "true";
     
     return NextResponse.json({ 

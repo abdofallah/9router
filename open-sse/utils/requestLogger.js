@@ -1,12 +1,25 @@
 // Check if running in Node.js environment (has fs module)
 const isNode = typeof process !== "undefined" && process.versions?.node && typeof window === "undefined";
 
-// Check if logging is enabled via environment variable (default: false)
-const LOGGING_ENABLED = typeof process !== "undefined" && process.env?.ENABLE_REQUEST_LOGS === 'true';
+// Request logs are enabled by default; set ENABLE_REQUEST_LOGS=false to opt out.
+const LOGGING_ENABLED = typeof process === "undefined" || process.env?.ENABLE_REQUEST_LOGS !== "false";
 
 let fs = null;
 let path = null;
+let os = null;
 let LOGS_DIR = null;
+
+// Resolve the per-user data dir that the rest of the app uses
+// (~/.9router on macOS/Linux, %APPDATA%/9router on Windows). DATA_DIR wins
+// when explicitly set so deployments can pin a custom location.
+function resolveDataDir() {
+  if (!process || !os) return null;
+  if (process.env?.DATA_DIR) return process.env.DATA_DIR;
+  if (process.platform === "win32") {
+    return path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "9router");
+  }
+  return path.join(os.homedir(), ".9router");
+}
 
 // Lazy load Node.js modules (avoid top-level await)
 async function ensureNodeModules() {
@@ -14,7 +27,9 @@ async function ensureNodeModules() {
   try {
     fs = await import("fs");
     path = await import("path");
-    LOGS_DIR = path.join(typeof process !== "undefined" && process.cwd ? process.cwd() : ".", "logs");
+    os = await import("os");
+    const dataDir = resolveDataDir();
+    LOGS_DIR = dataDir ? path.join(dataDir, "logs") : path.join(process.cwd ? process.cwd() : ".", "logs");
   } catch {
     // Running in non-Node environment (Worker, Browser, etc.)
   }
