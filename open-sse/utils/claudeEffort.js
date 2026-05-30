@@ -9,6 +9,7 @@
 //
 //   class           effort? levels                    adaptive  manualBudget   notes
 //   mythos          yes     low/medium/high/max       yes (def) NO             type:enabled is unsupported
+//   opus-4-8        yes     low/medium/high/xhigh/max yes       NO             mirrors 4.7 — newer flagship, no manual budget
 //   opus-4-7        yes     low/medium/high/xhigh/max yes       NO             type:enabled → 400
 //   opus-4-6        yes     low/medium/high/max       yes       deprecated/ok  manual still works but soft-deprecated
 //   sonnet-4-6      yes     low/medium/high/max       yes       deprecated/ok
@@ -58,6 +59,7 @@ export function isClaudeProviderModel(model) {
 // ones (opus-4) so 4.7 isn't accidentally classified as plain "opus-4".
 const MODEL_CLASS_PATTERNS = [
   ["mythos",     /mythos/i],
+  ["opus-4-8",   /opus-4-8/i],
   ["opus-4-7",   /opus-4-7/i],
   ["opus-4-6",   /opus-4-6/i],
   ["opus-4-5",   /opus-4-5/i],
@@ -83,13 +85,14 @@ export function getClaudeModelClass(model) {
 // ── Capability gates ──────────────────────────────────────────────────────
 
 // Models that accept `output_config.effort`.
-const EFFORT_MODELS = new Set(["mythos", "opus-4-7", "opus-4-6", "sonnet-4-6", "opus-4-5"]);
+const EFFORT_MODELS = new Set(["mythos", "opus-4-8", "opus-4-7", "opus-4-6", "sonnet-4-6", "opus-4-5"]);
 
 // Models that accept `thinking: { type: "adaptive" }`.
-const ADAPTIVE_MODELS = new Set(["mythos", "opus-4-7", "opus-4-6", "sonnet-4-6"]);
+const ADAPTIVE_MODELS = new Set(["mythos", "opus-4-8", "opus-4-7", "opus-4-6", "sonnet-4-6"]);
 
 // Models that accept `thinking: { type: "enabled", budget_tokens: N }`.
-// Excludes Mythos (no manual mode) and Opus 4.7 (manual is rejected with 400).
+// Excludes Mythos (no manual mode), Opus 4.7, and Opus 4.8 (frontier flagships;
+// manual is rejected with 400 — mirrors the 4.7 contract).
 const MANUAL_THINKING_MODELS = new Set([
   "opus-4-6", "sonnet-4-6", "opus-4-5", "sonnet-4-5", "haiku-4-5",
   "opus-4-1", "opus-4", "sonnet-4", "sonnet-3-7",
@@ -98,6 +101,7 @@ const MANUAL_THINKING_MODELS = new Set([
 // Effort levels accepted per class. Levels not in the set are rejected.
 const ALLOWED_LEVELS = {
   "mythos":     new Set(["low", "medium", "high", "max"]),
+  "opus-4-8":   new Set(["low", "medium", "high", "xhigh", "max"]),
   "opus-4-7":   new Set(["low", "medium", "high", "xhigh", "max"]),
   "opus-4-6":   new Set(["low", "medium", "high", "max"]),
   "sonnet-4-6": new Set(["low", "medium", "high", "max"]),
