@@ -189,7 +189,19 @@ const PERIODS = [
   { value: "60d", label: "60D" },
 ];
 
-export default function UsageStats({ period: periodProp, setPeriod: setPeriodProp, hidePeriodSelector = false } = {}) {
+function buildUsageRangeQuery(range, fallbackPeriod = "today") {
+  const params = new URLSearchParams();
+  if (range?.mode === "custom" && range.startDate && range.endDate) {
+    params.set("period", "custom");
+    params.set("startDate", range.startDate);
+    params.set("endDate", range.endDate);
+  } else {
+    params.set("period", range?.period || fallbackPeriod);
+  }
+  return params.toString();
+}
+
+export default function UsageStats({ period: periodProp, setPeriod: setPeriodProp, range = null, hidePeriodSelector = false } = {}) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -206,6 +218,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const isInitialLoad = useRef(true);
   const period = periodProp ?? periodLocal;
   const setPeriod = setPeriodProp ?? setPeriodLocal;
+  const rangeQuery = useMemo(() => buildUsageRangeQuery(range, period), [range, period]);
 
   // Fetch connected providers once, deduplicate by provider type
   // Always include noAuth free providers (e.g. opencode) regardless of connections
@@ -239,7 +252,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       setFetching(true);
     }
 
-    fetch(`/api/usage/stats?period=${period}`)
+    fetch(`/api/usage/stats?${rangeQuery}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
         if (data) setStats((prev) => ({ ...prev, ...data }));
@@ -249,7 +262,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
         setLoading(false);
         setFetching(false);
       });
-  }, [period]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [rangeQuery]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // SSE connection - real-time updates for activeRequests + recentRequests only
   useEffect(() => {
@@ -452,8 +465,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
         </div>
       )}
 
-      {/* Token / Cost chart - sync period */}
-      {loading ? spinner : <UsageChart period={period} />}
+      {loading ? spinner : <UsageChart period={period} rangeQuery={rangeQuery} />}
 
       {/* Table with dropdown selector */}
       <div className="flex flex-col gap-3">
