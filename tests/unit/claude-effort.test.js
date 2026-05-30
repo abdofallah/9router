@@ -19,6 +19,7 @@ describe("claudeEffort util", () => {
   describe("model class detection", () => {
     it.each([
       ["claude-mythos-preview", "mythos"],
+      ["claude-opus-4-8", "opus-4-8"],
       ["claude-opus-4-7", "opus-4-7"],
       ["claude-opus-4-7-20251001", "opus-4-7"],
       ["cc/claude-opus-4-6", "opus-4-6"],
@@ -65,6 +66,7 @@ describe("claudeEffort util", () => {
     const matrix = [
       // [model,                effort, levels,                         adaptive, manualBudget]
       ["claude-mythos-preview", true,  ["low","medium","high","max"],          true,  false],
+      ["claude-opus-4-8",       true,  ["low","medium","high","xhigh","max"],  true,  false],
       ["claude-opus-4-7",       true,  ["low","medium","high","xhigh","max"],  true,  false],
       ["claude-opus-4-6",       true,  ["low","medium","high","max"],          true,  true ],
       ["claude-sonnet-4-6",     true,  ["low","medium","high","max"],          true,  true ],
@@ -137,7 +139,8 @@ describe("claudeEffort util", () => {
       expect(supportsMaxEffort("claude-haiku-4-5")).toBe(false);
     });
 
-    it("xhigh effort is Opus 4.7-exclusive", () => {
+    it("xhigh effort is available on Opus 4.8 + Opus 4.7 (frontier flagships) only", () => {
+      expect(supportsXHighEffort("claude-opus-4-8")).toBe(true);
       expect(supportsXHighEffort("claude-opus-4-7")).toBe(true);
       expect(supportsXHighEffort("claude-opus-4-6")).toBe(false);
       expect(supportsXHighEffort("claude-mythos-preview")).toBe(false);
@@ -267,6 +270,33 @@ describe("openaiToClaudeRequest — emission per model class", () => {
       const body = { ...baseBody(), thinking: { type: "enabled", budget_tokens: 8000 } };
       expect(() => openaiToClaudeRequest("claude-opus-4-7", body, true))
         .toThrow(EffortValidationError);
+    });
+  });
+
+  describe("Opus 4.8 (frontier — mirrors 4.7: adaptive-only, supports xhigh, NO manual budget)", () => {
+    it("emits adaptive thinking with no budget by default", () => {
+      const out = openaiToClaudeRequest("claude-opus-4-8", baseBody(), true);
+      expect(out.thinking).toEqual({ type: "adaptive" });
+      expect(out.output_config).toBeUndefined();
+    });
+
+    it("attaches output_config.effort for xhigh", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[effortlevel:xhigh]" }] };
+      const out = openaiToClaudeRequest("claude-opus-4-8", body, true);
+      expect(out.output_config?.effort).toBe("xhigh");
+      expect(out.thinking).toEqual({ type: "adaptive" });
+    });
+
+    it("rejects [thinkingbudget:N] — manual budget unsupported on Opus 4.8", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[thinkingbudget:8000]" }] };
+      expect(() => openaiToClaudeRequest("claude-opus-4-8", body, true))
+        .toThrow(EffortValidationError);
+    });
+
+    it("accepts max effort", () => {
+      const body = { ...baseBody(), messages: [{ role: "user", content: "[effortlevel:max]" }] };
+      const out = openaiToClaudeRequest("claude-opus-4-8", body, true);
+      expect(out.output_config?.effort).toBe("max");
     });
   });
 
@@ -411,6 +441,7 @@ describe("openaiToClaudeRequest — emission per model class", () => {
 
 describe("allowedEffortLevels", () => {
   it("returns the documented set per model", () => {
+    expect([...allowedEffortLevels("claude-opus-4-8")]).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect([...allowedEffortLevels("claude-opus-4-7")]).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect([...allowedEffortLevels("claude-opus-4-6")]).toEqual(["low", "medium", "high", "max"]);
     expect([...allowedEffortLevels("claude-sonnet-4-6")]).toEqual(["low", "medium", "high", "max"]);
